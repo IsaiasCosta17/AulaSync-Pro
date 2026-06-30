@@ -1,0 +1,204 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+  QUOTA_REACHED
+}
+
+enum ItemStatus {
+  PENDING
+  UPLOADING
+  UPLOADED
+  ERROR
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model UserAccess {
+  userId             String   @id
+  role               String   @default("OPERATOR")
+  isActive           Boolean  @default(true)
+  mustChangePassword Boolean  @default(true)
+  sessionVersion     Int      @default(1)
+  lastLoginAt        DateTime?
+  createdById        String?
+  updatedAt          DateTime @updatedAt
+}
+
+model GoogleDriveAccount {
+  id                String        @id @default(cuid())
+  userId            String?
+  googleAccountId   String
+  name              String
+  email             String
+  avatarUrl         String?
+  encryptedTokens   String
+  scopes            String
+  isActive           Boolean       @default(true)
+  connectedAt       DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  folders           DriveFolder[]
+  uploadJobs         UploadJob[]
+
+  @@unique([userId, googleAccountId])
+  @@index([userId, isActive])
+}
+
+model YoutubeChannel {
+  id                String      @id @default(cuid())
+  userId            String?
+  youtubeChannelId  String
+  name              String
+  email             String
+  avatarUrl         String?
+  encryptedTokens   String
+  scopes            String
+  isActive           Boolean     @default(true)
+  dailyUploadCount  Int         @default(0)
+  dailyCounterDate  String?
+  connectedAt       DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  uploadJobs         UploadJob[]
+  playlists          Playlist[]
+
+  @@unique([userId, youtubeChannelId])
+  @@index([userId, isActive])
+}
+
+model DriveFolder {
+  id             String             @id @default(cuid())
+  driveFolderId  String
+  name           String
+  parentId       String?
+  path           String?
+  driveAccountId String
+  driveAccount   GoogleDriveAccount @relation(fields: [driveAccountId], references: [id], onDelete: Cascade)
+  createdAt      DateTime           @default(now())
+  uploadJobs     UploadJob[]
+
+  @@unique([driveAccountId, driveFolderId])
+}
+
+model Playlist {
+  id                String         @id @default(cuid())
+  youtubePlaylistId String
+  name              String
+  privacyStatus     String         @default("unlisted")
+  channelId         String
+  channel           YoutubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  createdAt         DateTime       @default(now())
+  uploadJobs         UploadJob[]
+
+  @@unique([channelId, youtubePlaylistId])
+}
+
+model UploadJob {
+  userId         String?
+  id             String             @id @default(cuid())
+  courseName     String
+  status         JobStatus          @default(PENDING)
+  progress       Int                @default(0)
+  privacyStatus  String             @default("unlisted")
+  errorMessage   String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  driveAccountId String
+  driveAccount   GoogleDriveAccount @relation(fields: [driveAccountId], references: [id])
+  channelId      String
+  channel        YoutubeChannel     @relation(fields: [channelId], references: [id])
+  driveFolderId  String
+  driveFolder    DriveFolder        @relation(fields: [driveFolderId], references: [id])
+  playlistId     String?
+  playlist       Playlist?          @relation(fields: [playlistId], references: [id])
+  items          UploadItem[]
+  logs           Log[]
+
+  @@index([userId, status])
+}
+
+model UploadItem {
+  id             String     @id @default(cuid())
+  jobId          String
+  job            UploadJob  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  driveFileId    String
+  originalName   String
+  title          String
+  moduleName     String?
+  sortOrder      Int
+  mimeType       String
+  sizeBytes      BigInt?
+  status         ItemStatus @default(PENDING)
+  progress       Int        @default(0)
+  youtubeVideoId String?
+  youtubeUrl     String?
+  errorMessage   String?
+  encryptedResumableUri String?
+  uploadedAt     DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@unique([jobId, driveFileId])
+}
+
+model Log {
+  id        String     @id @default(cuid())
+  level     String
+  message   String
+  metadata  String?
+  jobId     String?
+  job       UploadJob? @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  createdAt DateTime   @default(now())
+}
+
+
+model AppSettings {
+  id                          String   @id
+  maxConcurrentUploads        Int      @default(3)
+  temporaryRetrySeconds       Int      @default(15)
+  quotaRetryMinutes           Int      @default(60)
+  defaultPrivacy              String   @default("unlisted")
+  defaultDescription          String   @default("Enviado com AulaSync Pro.")
+  defaultTags                 String   @default("")
+  defaultThumbnailDriveFileId String?
+  duplicateCheckEnabled       Boolean  @default(true)
+  adaptiveConcurrencyEnabled  Boolean  @default(true)
+  updatedAt                   DateTime @updatedAt
+}
+
+model HiddenUploadJob {
+  jobId    String   @id
+  hiddenAt DateTime @default(now())
+}
+
+model NotificationState {
+  id         String   @id
+  lastReadAt DateTime @default(now())
+}
+
+model UploadJobLease {
+  jobId     String   @id
+  ownerId   String
+  expiresAt DateTime
+}
