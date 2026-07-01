@@ -4,13 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && prisma db push --accept-data-loss && prisma db seed && next build",
+    "build": "pnpm run prisma:permissions && prisma generate && pnpm run prisma:permissions && prisma db push --accept-data-loss && prisma db seed && next build",
     "start": "next start",
     "db:push": "prisma db push --accept-data-loss",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
-    "deploy:setup": "prisma generate && prisma db push --accept-data-loss && prisma db seed && next build",
-    "postinstall": "prisma generate"
+    "deploy:setup": "pnpm run prisma:permissions && prisma generate && pnpm run prisma:permissions && prisma db push --accept-data-loss && prisma db seed && next build",
+    "postinstall": "prisma generate && node scripts/fix-prisma-permissions.mjs",
+    "prisma:permissions": "node scripts/fix-prisma-permissions.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
