@@ -4,12 +4,13 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && prisma db push --accept-data-loss && prisma db seed && next build",
     "start": "next start",
     "db:push": "prisma db push --accept-data-loss",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
-    "deploy:setup": "prisma db push --accept-data-loss && prisma db seed && next build"
+    "deploy:setup": "prisma generate && prisma db push --accept-data-loss && prisma db seed && next build",
+    "postinstall": "prisma generate"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
