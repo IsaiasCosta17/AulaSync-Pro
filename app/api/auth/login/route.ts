@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { ensureDatabaseReady } from "@/lib/database-bootstrap";
 import { createSessionToken, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth";
 import { getUserAccess, recordSuccessfulLogin } from "@/lib/user-access";
 
@@ -27,6 +28,7 @@ export async function POST(request: Request) {
   if (current && current.resetAt <= now) attempts.delete(ip);
 
   try {
+    await ensureDatabaseReady();
     const body = schema.parse(await request.json());
     const user = await prisma.user.findUnique({ where: { email: body.email.trim().toLowerCase() } });
     let passwordMatches = false;
