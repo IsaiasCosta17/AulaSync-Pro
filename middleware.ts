@@ -8,6 +8,7 @@ const publicPaths = [
   "/politica-de-privacidade",
   "/termos-de-uso",
   "/api/auth/login",
+  "/api/health",
   "/session-invalid",
   "/icon.svg",
 ];
