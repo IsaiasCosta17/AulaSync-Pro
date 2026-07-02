@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { ensureDatabaseReady } from "@/lib/database-bootstrap";
 import { createSessionToken, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth";
 import { getUserAccess, recordSuccessfulLogin } from "@/lib/user-access";
+import { cleanErrorMessage } from "@/lib/utils";
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
 const WINDOW_MS = 15 * 60 * 1000;
@@ -27,10 +28,24 @@ export async function POST(request: Request) {
   }
   if (current && current.resetAt <= now) attempts.delete(ip);
 
+  let stage = "AUTH_REQUEST";
+
   try {
-    await ensureDatabaseReady();
+    stage = "AUTH_DB_INIT";
+    try {
+      await ensureDatabaseReady();
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await ensureDatabaseReady();
+    }
+
+    stage = "AUTH_INPUT";
     const body = schema.parse(await request.json());
-    const user = await prisma.user.findUnique({ where: { email: body.email.trim().toLowerCase() } });
+
+    stage = "AUTH_USER_LOOKUP";
+    const user = await prisma.user.findUnique({
+      where: { email: body.email.trim().toLowerCase() },
+    });
     let passwordMatches = false;
     if (user) {
       passwordMatches = await bcrypt.compare(body.password, user.passwordHash);
@@ -47,6 +62,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "E-mail ou senha incorretos." }, { status: 401 });
     }
 
+    stage = "AUTH_ACCESS";
     const access = await getUserAccess(user.id);
     if (!access?.isActive) {
       return NextResponse.json(
@@ -56,8 +72,10 @@ export async function POST(request: Request) {
     }
 
     attempts.delete(ip);
+    stage = "AUTH_RECORD";
     await recordSuccessfulLogin(user.id);
 
+    stage = "AUTH_SESSION";
     const token = await createSessionToken({
       userId: user.id,
       name: user.name,
@@ -79,6 +97,12 @@ export async function POST(request: Request) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: "Preencha um e-mail e uma senha válidos." }, { status: 400 });
     }
-    return NextResponse.json({ error: "Não foi possível entrar agora." }, { status: 500 });
+
+    const message = error instanceof Error ? error.message : "Falha interna de autenticação.";
+    console.error(`[${stage}]`, cleanErrorMessage(message));
+    return NextResponse.json(
+      { error: `Não foi possível entrar agora. Código: ${stage}` },
+      { status: 500 },
+    );
   }
 }
