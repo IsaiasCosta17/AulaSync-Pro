@@ -35,17 +35,13 @@ jobs:
       - name: Baixar código
         uses: actions/checkout@v4
 
-      - name: Preparar pnpm
-        uses: pnpm/action-setup@v4
-
       - name: Preparar Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: pnpm
 
       - name: Instalar dependências
-        run: pnpm install --frozen-lockfile
+        run: npm install --include=dev --no-audit --no-fund
 
       - name: Validar TypeScript e build
-        run: pnpm run ci:check
+        run: npm run ci:check
