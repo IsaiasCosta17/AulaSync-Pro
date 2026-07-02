@@ -7,22 +7,29 @@ async function main() {
   const email = (process.env.ADMIN_EMAIL || "admin@aulasync.pro").trim().toLowerCase();
   const password = (process.env.ADMIN_PASSWORD || "troque-esta-senha").trim();
   const name = (process.env.ADMIN_NAME || "Administrador").trim();
-  const passwordHash = await bcrypt.hash(password, 12);
+
+  const existingUser = await prisma.user.findUnique({ where: { email } });
+  const passwordChanged = existingUser
+    ? !(await bcrypt.compare(password, existingUser.passwordHash))
+    : true;
+  const passwordHash = passwordChanged
+    ? await bcrypt.hash(password, 12)
+    : existingUser!.passwordHash;
 
   const user = await prisma.user.upsert({
     where: { email },
-    update: { name, passwordHash },
+    update: { name, ...(passwordChanged ? { passwordHash } : {}) },
     create: { email, name, passwordHash },
   });
 
-  await Promise.all([
+  await prisma.$transaction([
     prisma.userAccess.upsert({
       where: { userId: user.id },
       update: {
         role: "ADMIN",
         isActive: true,
         mustChangePassword: false,
-        sessionVersion: { increment: 1 },
+        ...(passwordChanged ? { sessionVersion: { increment: 1 } } : {}),
       },
       create: {
         userId: user.id,
@@ -44,12 +51,12 @@ async function main() {
     }),
   ]);
 
-  console.log(`Administrador criado: ${email}`);
+  console.log(`Administrador sincronizado: ${email}`);
 }
 
 main()
   .catch((error) => {
-    console.error(error);
+    console.error("Falha ao sincronizar o administrador.", error);
     process.exitCode = 1;
   })
   .finally(() => prisma.$disconnect());
