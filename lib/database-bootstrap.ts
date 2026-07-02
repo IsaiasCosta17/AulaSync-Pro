@@ -29,10 +29,15 @@ const schemaStatements = [
 let initialization: Promise<void> | undefined;
 
 async function initializeDatabase() {
-  // Aguarda bloqueios curtos e permite leituras enquanto outra requisição grava.
-  await prisma.$queryRawUnsafe("PRAGMA busy_timeout = 15000");
-  await prisma.$queryRawUnsafe("PRAGMA journal_mode = WAL");
-  await prisma.$queryRawUnsafe("PRAGMA synchronous = NORMAL");
+  // Algumas hospedagens gerenciadas limitam PRAGMAs. Essas otimizações são
+  // opcionais e nunca podem impedir a criação do banco ou o login.
+  for (const pragma of [
+    "PRAGMA busy_timeout = 15000",
+    "PRAGMA journal_mode = WAL",
+    "PRAGMA synchronous = NORMAL",
+  ]) {
+    await prisma.$queryRawUnsafe(pragma).catch(() => undefined);
+  }
 
   for (const statement of schemaStatements) {
     await prisma.$executeRawUnsafe(statement);
