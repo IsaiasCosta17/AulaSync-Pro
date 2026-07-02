@@ -29,6 +29,11 @@ const schemaStatements = [
 let initialization: Promise<void> | undefined;
 
 async function initializeDatabase() {
+  // Aguarda bloqueios curtos e permite leituras enquanto outra requisição grava.
+  await prisma.$queryRawUnsafe("PRAGMA busy_timeout = 15000");
+  await prisma.$queryRawUnsafe("PRAGMA journal_mode = WAL");
+  await prisma.$queryRawUnsafe("PRAGMA synchronous = NORMAL");
+
   for (const statement of schemaStatements) {
     await prisma.$executeRawUnsafe(statement);
   }
@@ -37,10 +42,14 @@ async function initializeDatabase() {
   const name = (process.env.ADMIN_NAME || "Administrador").trim();
   const password = process.env.ADMIN_PASSWORD || "troque-esta-senha";
   const passwordHash = await bcrypt.hash(password, 12);
+  const forcePasswordReset = process.env.ADMIN_FORCE_PASSWORD_RESET === "true";
 
   const user = await prisma.user.upsert({
     where: { email },
-    update: { name },
+    update: {
+      name,
+      ...(forcePasswordReset ? { passwordHash } : {}),
+    },
     create: { email, name, passwordHash },
   });
 
