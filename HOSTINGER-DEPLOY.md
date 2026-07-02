@@ -1,97 +1,67 @@
-# Publicar AulaSync Pro na Hostinger VPS
+# Implantação limpa na Hostinger
 
-## Arquivo para upload
+## 1. Criar o aplicativo
 
-Envie o arquivo aulasync-pro-hostinger-vps.zip ao diretório do domínio e extraia seu conteúdo. O ZIP não contém .env, senhas, tokens, banco local, node_modules, .next ou logs.
+1. No hPanel, abra **Sites > Adicionar site > Node.js Web App**.
+2. Escolha **Importar repositório GitHub**.
+3. Selecione `IsaiasCosta17/AulaSync-Pro` e a branch `main`.
+4. Deixe o diretório raiz vazio ou use `.`.
+5. Confirme o framework **Next.js** e Node.js **20.x**.
+6. Use `pnpm build` para construir e `pnpm start` para iniciar.
+7. Não crie a variável `PORT`: a Hostinger fornece a porta automaticamente.
 
-## Requisitos
+## 2. Variáveis obrigatórias
 
-- VPS Hostinger com Ubuntu e acesso SSH
-- Node.js 20 ou 22
-- domínio apontado para o VPS
-- HTTPS/SSL ativo
-- PM2 instalado globalmente
+Cadastre em **Configurações > Variáveis de ambiente**:
 
-## Instalação
+- `DATABASE_URL`
+- `ADMIN_NAME`
+- `ADMIN_EMAIL`
+- `ADMIN_PASSWORD`
+- `AUTH_SECRET`
+- `TOKEN_ENCRYPTION_KEY`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_REDIRECT_URI_DRIVE`
+- `GOOGLE_REDIRECT_URI_YOUTUBE`
+- `NEXT_PUBLIC_APP_URL`
 
-No diretório extraído:
+Use o arquivo `.env.example` como referência, mas nunca envie os valores reais ao GitHub.
 
-~~~bash
-corepack enable
-pnpm install --frozen-lockfile
-cp .env.production.example .env
-~~~
+Para Supabase na Hostinger, copie **Connect > Session pooler**, porta **5432**. A senha precisa estar codificada para URL quando contiver caracteres especiais.
 
-Edite .env e substitua todos os valores de exemplo. Depois:
+Não troque `TOKEN_ENCRYPTION_KEY` depois que contas Google forem conectadas, pois ela protege os tokens armazenados.
 
-~~~bash
-pnpm run db:push
-pnpm run db:seed
-pnpm run build
-npm install -g pm2
-pm2 start ecosystem.config.cjs
-pm2 save
-pm2 startup
-~~~
+## 3. Construção
 
-Execute o comando adicional mostrado por pm2 startup para habilitar a inicialização automática no Linux.
+A construção valida as variáveis antes de executar Prisma. Em seguida:
 
-## Proxy e SSL
+1. gera o Prisma Client;
+2. cria/atualiza as tabelas;
+3. cria ou atualiza o administrador;
+4. compila o Next.js.
 
-Configure o domínio no CloudPanel, aponte o proxy para http://127.0.0.1:3000 e emita um certificado Let's Encrypt.
+O log bem-sucedido deve conter:
 
-## Google Cloud
+- `Variáveis obrigatórias de produção verificadas com sucesso.`
+- `Your database is now in sync with your Prisma schema.`
+- `Administrador criado:`
+- `Compiled successfully`
 
-No cliente OAuth, substitua localhost por:
+Se a validação parar a construção, corrija somente as variáveis indicadas e reimplante.
 
-- https://SEU-DOMINIO.com/api/oauth/google/drive/callback
-- https://SEU-DOMINIO.com/api/oauth/google/youtube/callback
+## 4. Verificação
 
-No Branding use:
+Depois de a implantação aparecer como **Concluída**, abra:
 
-- Página inicial: https://SEU-DOMINIO.com/sobre
-- Política: https://SEU-DOMINIO.com/politica-de-privacidade
-- Termos: https://SEU-DOMINIO.com/termos-de-uso
-- Domínio autorizado: SEU-DOMINIO.com
+- `https://universosmixcursos.com/api/health`
 
-Verifique o domínio no Google Search Console antes de solicitar a verificação OAuth.
+Resultado saudável:
 
-## Segurança
+```json
+{"status":"ok","application":"AulaSync Pro","database":"connected"}
+```
 
-Não envie o .env local nem prisma/dev.db. Conecte novamente as contas Google no domínio de produção. Guarde cópias seguras de AUTH_SECRET, TOKEN_ENCRYPTION_KEY e do banco prisma/production.db.
-
-## Atualizações
-
-Substitua os arquivos de código e execute:
-
-~~~bash
-pnpm install --frozen-lockfile
-pnpm run db:push
-pnpm run build
-pm2 restart ecosystem.config.cjs
-~~~
-
-## Verificação
-
-~~~bash
-pm2 status
-pm2 logs aulasync-web
-pm2 logs aulasync-worker
-~~~
-
-O site e o worker precisam aparecer como online.
-
-
-## Gestão de usuários
-
-Depois da primeira inicialização, entre com o administrador definido no arquivo `.env` e abra **Administração > Usuários**. Os demais acessos são criados manualmente por essa tela. Não compartilhe a senha do administrador.
-
-
-## Isolamento multiusuário
-
-Na primeira inicialização desta versão, as conexões e tarefas já existentes são vinculadas ao administrador inicial. Cada usuário criado depois começa com um espaço vazio e conecta suas próprias contas Google. Execute sempre `pnpm run deploy:setup` ao atualizar para aplicar a estrutura do banco.
-
-
-## Três perfis
-
-Após entrar como administrador, cadastre operadores para a gestão de acessos e clientes para uso operacional. Clientes começam sem conexões ou histórico. Operadores não têm acesso aos dados Drive, YouTube, cursos ou uploads dos clientes.
+- Se o domínio inteiro mostrar 503, confirme o commit implantado e o comando `pnpm start`.
+- Se a rota responder com `database: "unavailable"`, revise `DATABASE_URL`.
+- Se a rota estiver saudável e o login falhar, confira `ADMIN_EMAIL` e `ADMIN_PASSWORD`, sem aspas ou espaços extras.
