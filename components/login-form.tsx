@@ -16,23 +16,53 @@ export function LoginForm() {
     setError("");
     try {
       const form = new FormData(event.currentTarget);
-      const response = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: form.get("email"),
-          password: form.get("password"),
-        }),
-      });
-      const data = await response.json().catch(() => ({}));
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 20_000);
+      let response: Response;
+      try {
+        response = await fetch("/api/auth/login", {
+          method: "POST",
+          cache: "no-store",
+          signal: controller.signal,
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          },
+          body: JSON.stringify({
+            email: form.get("email"),
+            password: form.get("password"),
+          }),
+        });
+      } finally {
+        window.clearTimeout(timeout);
+      }
+
+      const rawBody = await response.text();
+      let data: { error?: string; redirect?: string } = {};
+      try {
+        data = rawBody ? JSON.parse(rawBody) : {};
+      } catch {
+        data = {};
+      }
+
       if (!response.ok) {
-        setError(data.error || "Não foi possível entrar.");
+        const fallback =
+          response.status === 503
+            ? "Servidor temporariamente indisponível (HTTP 503)."
+            : response.status === 504
+              ? "O servidor demorou demais para responder (HTTP 504)."
+              : `Falha do servidor (HTTP ${response.status}).`;
+        setError(data.error || fallback);
         return;
       }
       router.push(data.redirect || "/dashboard");
       router.refresh();
-    } catch {
-      setError("Não foi possível conectar ao servidor.");
+    } catch (error) {
+      setError(
+        error instanceof DOMException && error.name === "AbortError"
+          ? "O servidor não respondeu em 20 segundos."
+          : "Não foi possível conectar ao servidor.",
+      );
     } finally {
       setLoading(false);
     }
