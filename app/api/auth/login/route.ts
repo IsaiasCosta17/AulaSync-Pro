@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { ensureDatabaseReady } from "@/lib/database-bootstrap";
 import { createSessionToken, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth";
 import { getUserAccess, recordSuccessfulLogin } from "@/lib/user-access";
 import { cleanErrorMessage } from "@/lib/utils";
@@ -15,6 +14,45 @@ const schema = z.object({
   email: z.string().email(),
   password: z.string().min(6),
 });
+
+function databaseErrorCategory(error: unknown) {
+  const candidate = error as { code?: string; errorCode?: string; message?: string };
+  const prismaCode = candidate?.code || candidate?.errorCode || "";
+  const message = candidate?.message || "";
+
+  if (prismaCode === "P1000" || /password authentication failed|authentication failed/i.test(message)) {
+    return "DB_AUTH";
+  }
+  if (prismaCode === "P1001" || /can't reach database|ECONNREFUSED|ENOTFOUND|getaddrinfo/i.test(message)) {
+    return "DB_UNREACHABLE";
+  }
+  if (prismaCode === "P1002" || prismaCode === "P2024" || /timed? ?out|timeout/i.test(message)) {
+    return "DB_TIMEOUT";
+  }
+  if (prismaCode === "P1003") return "DB_NOT_FOUND";
+  if (prismaCode === "P1012" || /DATABASE_URL|environment variable not found/i.test(message)) {
+    return "DB_CONFIG";
+  }
+  if (prismaCode === "P2021" || /relation .* does not exist|table .* does not exist/i.test(message)) {
+    return "DB_SCHEMA";
+  }
+  return "DB_UNKNOWN";
+}
+
+async function findUserWithRetry(email: string) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await prisma.user.findUnique({ where: { email } });
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError;
+}
 
 export async function POST(request: Request) {
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
@@ -31,21 +69,11 @@ export async function POST(request: Request) {
   let stage = "AUTH_REQUEST";
 
   try {
-    stage = "AUTH_DB_INIT";
-    try {
-      await ensureDatabaseReady();
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      await ensureDatabaseReady();
-    }
-
     stage = "AUTH_INPUT";
     const body = schema.parse(await request.json());
 
     stage = "AUTH_USER_LOOKUP";
-    const user = await prisma.user.findUnique({
-      where: { email: body.email.trim().toLowerCase() },
-    });
+    const user = await findUserWithRetry(body.email.trim().toLowerCase());
     let passwordMatches = false;
     if (user) {
       passwordMatches = await bcrypt.compare(body.password, user.passwordHash);
@@ -100,8 +128,12 @@ export async function POST(request: Request) {
 
     const message = error instanceof Error ? error.message : "Falha interna de autenticação.";
     console.error(`[${stage}]`, cleanErrorMessage(message));
+    const databaseStages = ["AUTH_USER_LOOKUP", "AUTH_ACCESS", "AUTH_RECORD"];
+    const code = databaseStages.includes(stage)
+      ? `${stage}_${databaseErrorCategory(error)}`
+      : stage;
     return NextResponse.json(
-      { error: `Não foi possível entrar agora. Código: ${stage}` },
+      { error: `Não foi possível entrar agora. Código: ${code}` },
       { status: 500 },
     );
   }
