@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -48,6 +48,8 @@ async function run(label, command, args, attempts = 1) {
   }
 }
 
+const npmExec = (args) => [npm, ["exec", "--", ...args]];
+
 try {
   await run(
     "Validar variáveis de produção",
@@ -59,20 +61,19 @@ try {
     process.execPath,
     ["scripts/fix-prisma-permissions.mjs"],
   );
-  await run("Gerar Prisma Client", pnpm, ["exec", "prisma", "generate"]);
-  await run(
-    "Sincronizar schema PostgreSQL",
-    pnpm,
-    ["exec", "prisma", "db", "push"],
-    3,
-  );
-  await run(
-    "Sincronizar administrador",
-    pnpm,
-    ["exec", "prisma", "db", "seed"],
-    3,
-  );
-  await run("Compilar Next.js", pnpm, ["exec", "next", "build"]);
+
+  const [prismaCommand, prismaGenerate] = npmExec(["prisma", "generate"]);
+  await run("Gerar Prisma Client", prismaCommand, prismaGenerate);
+
+  const [pushCommand, pushArgs] = npmExec(["prisma", "db", "push"]);
+  await run("Sincronizar schema PostgreSQL", pushCommand, pushArgs, 3);
+
+  const [seedCommand, seedArgs] = npmExec(["prisma", "db", "seed"]);
+  await run("Sincronizar administrador", seedCommand, seedArgs, 3);
+
+  const [nextCommand, nextArgs] = npmExec(["next", "build"]);
+  await run("Compilar Next.js", nextCommand, nextArgs);
+
   console.log("\n[PREPARAÇÃO] AulaSync Pro preparado com sucesso.");
 } catch (error) {
   const message = error instanceof Error ? error.message : "Erro desconhecido.";
