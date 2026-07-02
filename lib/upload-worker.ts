@@ -33,27 +33,14 @@ let recentTemporaryFailures: number[] = [];
 let concurrencyRestoreTimer: ReturnType<typeof setTimeout> | null = null;
 let lastRecoveryScan = 0;
 const workerOwnerId = randomUUID();
-let leaseSchemaReady: Promise<void> | null = null;
 
 type JobContext = UploadJob & {
   driveAccount: GoogleDriveAccount;
   channel: YoutubeChannel;
 };
 
-function ensureLeaseSchema() {
-  if (!leaseSchemaReady) {
-    leaseSchemaReady = prisma.$executeRawUnsafe(
-      'CREATE TABLE IF NOT EXISTS "UploadJobLease" (' +
-      '"jobId" TEXT NOT NULL PRIMARY KEY,' +
-      '"ownerId" TEXT NOT NULL,' +
-      '"expiresAt" DATETIME NOT NULL' +
-      ')',
-    ).then(() => undefined).catch((error) => {
-      leaseSchemaReady = null;
-      throw error;
-    });
-  }
-  return leaseSchemaReady;
+async function ensureLeaseSchema() {
+  // O schema e criado pelo Prisma durante a implantacao.
 }
 
 async function backgroundWorkerIsHealthy() {
@@ -71,44 +58,43 @@ async function acquireJobLease(jobId: string) {
   await ensureLeaseSchema();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 120_000);
-  await prisma.$executeRawUnsafe(
-    'DELETE FROM "UploadJobLease" WHERE "expiresAt" <= ?',
-    now,
-  );
-  await prisma.$executeRawUnsafe(
-    'INSERT OR IGNORE INTO "UploadJobLease" ("jobId", "ownerId", "expiresAt") VALUES (?, ?, ?)',
-    jobId,
-    workerOwnerId,
-    expiresAt,
-  );
-  await prisma.$executeRawUnsafe(
-    'UPDATE "UploadJobLease" SET "expiresAt" = ? WHERE "jobId" = ? AND "ownerId" = ?',
-    expiresAt,
-    jobId,
-    workerOwnerId,
-  );
-  const rows = await prisma.$queryRawUnsafe<Array<{ ownerId: string }>>(
-    'SELECT "ownerId" FROM "UploadJobLease" WHERE "jobId" = ? LIMIT 1',
-    jobId,
-  );
-  return rows[0]?.ownerId === workerOwnerId;
+
+  await prisma.uploadJobLease.deleteMany({
+    where: { expiresAt: { lte: now } },
+  });
+
+  try {
+    await prisma.uploadJobLease.create({
+      data: { jobId, ownerId: workerOwnerId, expiresAt },
+    });
+  } catch {
+    // Outra instancia pode ter adquirido a tarefa no mesmo instante.
+  }
+
+  const renewed = await prisma.uploadJobLease.updateMany({
+    where: { jobId, ownerId: workerOwnerId },
+    data: { expiresAt },
+  });
+  if (renewed.count > 0) return true;
+
+  const lease = await prisma.uploadJobLease.findUnique({
+    where: { jobId },
+    select: { ownerId: true },
+  });
+  return lease?.ownerId === workerOwnerId;
 }
 
 async function renewJobLease(jobId: string) {
-  await prisma.$executeRawUnsafe(
-    'UPDATE "UploadJobLease" SET "expiresAt" = ? WHERE "jobId" = ? AND "ownerId" = ?',
-    new Date(Date.now() + 120_000),
-    jobId,
-    workerOwnerId,
-  );
+  await prisma.uploadJobLease.updateMany({
+    where: { jobId, ownerId: workerOwnerId },
+    data: { expiresAt: new Date(Date.now() + 120_000) },
+  });
 }
 
 async function releaseJobLease(jobId: string) {
-  await prisma.$executeRawUnsafe(
-    'DELETE FROM "UploadJobLease" WHERE "jobId" = ? AND "ownerId" = ?',
-    jobId,
-    workerOwnerId,
-  );
+  await prisma.uploadJobLease.deleteMany({
+    where: { jobId, ownerId: workerOwnerId },
+  });
 }
 
 function scheduleUploadJob(jobId: string, delayMs: number) {
