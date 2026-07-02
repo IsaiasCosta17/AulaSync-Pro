@@ -35,16 +35,12 @@ async function initializeDatabase() {
 
   const email = (process.env.ADMIN_EMAIL || "admin@aulasync.pro").trim().toLowerCase();
   const name = (process.env.ADMIN_NAME || "Administrador").trim();
-  const password = process.env.ADMIN_PASSWORD || "troque-esta-senha";
+  const password = (process.env.ADMIN_PASSWORD || "troque-esta-senha").trim();
   const passwordHash = await bcrypt.hash(password, 12);
-  const forcePasswordReset = process.env.ADMIN_FORCE_PASSWORD_RESET === "true";
 
   const user = await prisma.user.upsert({
     where: { email },
-    update: {
-      name,
-      ...(forcePasswordReset ? { passwordHash } : {}),
-    },
+    update: { name, passwordHash },
     create: { email, name, passwordHash },
   });
 
