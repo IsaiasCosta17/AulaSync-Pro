@@ -34,7 +34,7 @@ Não troque `TOKEN_ENCRYPTION_KEY` depois que contas Google forem conectadas, po
 
 ## 3. Construção
 
-A construção valida as variáveis antes de executar Prisma. Em seguida:
+A construção valida as variáveis antes de executar Prisma. Falhas temporárias do banco recebem até 3 tentativas com espera progressiva. Em seguida:
 
 1. gera o Prisma Client;
 2. cria/atualiza as tabelas;
@@ -45,12 +45,16 @@ O log bem-sucedido deve conter:
 
 - `Variáveis obrigatórias de produção verificadas com sucesso.`
 - `Your database is now in sync with your Prisma schema.`
-- `Administrador criado:`
+- `Administrador sincronizado:`
 - `Compiled successfully`
 
-Se a validação parar a construção, corrija somente as variáveis indicadas e reimplante.
+Se a validação parar a construção, corrija somente as variáveis indicadas e reimplante. O schema é sincronizado sem autorização automática para perda de dados.
 
-## 4. Verificação
+## 4. Verificação automática no GitHub
+
+Cada envio para a branch `main` executa o workflow **Verificação automática**, que instala dependências, valida as variáveis de teste, executa TypeScript e compila o Next.js. Antes de reinstalar na Hostinger, confirme uma marca verde na aba **Actions** do repositório.
+
+## 5. Verificação
 
 Depois de a implantação aparecer como **Concluída**, abra:
 
