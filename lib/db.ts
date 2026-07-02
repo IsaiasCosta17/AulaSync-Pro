@@ -8,6 +8,6 @@ export const prisma =
     log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
   });
 
-// Reutiliza um único cliente também em produção para reduzir processos duplicados
-// e bloqueios concorrentes no arquivo SQLite.
+// Reutiliza um único cliente também em produção para reduzir conexões simultâneas
+// com o PostgreSQL.
 globalForPrisma.prisma = prisma;
