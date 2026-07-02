@@ -7,7 +7,7 @@
 3. Selecione `IsaiasCosta17/AulaSync-Pro` e a branch `main`.
 4. Deixe o diretório raiz vazio ou use `.`.
 5. Confirme o framework **Next.js** e Node.js **20.x**.
-6. Use `pnpm build` para construir e `pnpm start` para iniciar.
+6. Use `npm run build` para construir e `npm start` para iniciar.
 7. Não crie a variável `PORT`: a Hostinger fornece a porta automaticamente.
 
 ## 2. Variáveis obrigatórias
@@ -66,6 +66,6 @@ Resultado saudável:
 {"status":"ok","application":"AulaSync Pro","database":"connected"}
 ```
 
-- Se o domínio inteiro mostrar 503, confirme o commit implantado e o comando `pnpm start`.
+- Se o domínio inteiro mostrar 503, confirme o commit implantado e o comando `npm start`.
 - Se a rota responder com `database: "unavailable"`, revise `DATABASE_URL`.
 - Se a rota estiver saudável e o login falhar, confira `ADMIN_EMAIL` e `ADMIN_PASSWORD`, sem aspas ou espaços extras.
