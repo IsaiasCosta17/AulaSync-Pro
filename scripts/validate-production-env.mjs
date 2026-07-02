@@ -49,8 +49,8 @@ if (adminName && adminName.length < 2) errors.push("ADMIN_NAME deve ter pelo men
 if (adminEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) {
   errors.push("ADMIN_EMAIL não é um e-mail válido.");
 }
-if (adminPassword && adminPassword.length < 8) {
-  errors.push("ADMIN_PASSWORD deve ter pelo menos 8 caracteres.");
+if (adminPassword && adminPassword.length < 12) {
+  errors.push("ADMIN_PASSWORD deve ter pelo menos 12 caracteres.");
 }
 if (authSecret && authSecret.length < 32) {
   errors.push("AUTH_SECRET deve ter pelo menos 32 caracteres.");
