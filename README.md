@@ -26,7 +26,7 @@ O AulaSync Pro conecta contas Google Drive a canais YouTube, organiza cursos por
 - Menu do administrador e indicador lateral alimentados por dados reais.
 - Histórico removível sem apagar nada no Drive ou no YouTube, com aba Removidos e restauração.
 - Relatórios filtráveis e exportação CSV e Excel/XLSX.
-- Configurações globais persistidas no SQLite.
+- Configurações de cada usuário persistidas no PostgreSQL.
 
 ## Início rápido no Windows
 
@@ -58,15 +58,18 @@ Abra http://localhost:3000 e entre com o administrador definido no arquivo .env.
 
 Em produção, use domínio HTTPS, troque as URLs de callback e conclua a verificação OAuth exigida pelo Google para os escopos do YouTube.
 
+## Supabase em produção
+
+Use a URI PostgreSQL fornecida pelo Supabase em `DATABASE_URL`. A variável deve existir tanto na fase de construção quanto na execução da aplicação. Não publique essa URI no GitHub. Em hospedagens sem IPv6, prefira o endereço do pooler em modo Session indicado pelo Supabase.
+
 ## Variáveis de ambiente
 
 | Variável | Finalidade |
 |---|---|
-| DATABASE_URL | Banco SQLite do MVP, normalmente file:./dev.db |
+| DATABASE_URL | Conexão PostgreSQL persistente, por exemplo Supabase |
 | ADMIN_NAME | Nome do administrador inicial |
 | ADMIN_EMAIL | E-mail de login |
 | ADMIN_PASSWORD | Senha inicial ou nova senha administrativa |
-| ADMIN_FORCE_PASSWORD_RESET | Use true em uma única publicação para redefinir a senha do administrador existente |
 | AUTH_SECRET | Assinatura de sessão e estado OAuth |
 | TOKEN_ENCRYPTION_KEY | Chave Base64 de 32 bytes para criptografar tokens |
 | GOOGLE_CLIENT_ID | Cliente OAuth do Google |
@@ -127,9 +130,9 @@ Os relatórios podem ser filtrados por canal, curso, aula e status. CSV é gerad
 
 ## Banco de dados
 
-O MVP usa SQLite e Prisma. O inicializador executa db:push quando a versão muda. As tabelas principais são User, GoogleDriveAccount, YoutubeChannel, DriveFolder, UploadJob, UploadItem, Playlist, Log, AppSettings e HiddenUploadJob.
+A produção usa PostgreSQL e Prisma. A implantação executa db:push antes da compilação para criar ou atualizar as tabelas. As tabelas principais são User, GoogleDriveAccount, YoutubeChannel, DriveFolder, UploadJob, UploadItem, Playlist, Log, AppSettings e HiddenUploadJob.
 
-AppSettings armazena as configurações globais. HiddenUploadJob implementa a remoção reversível do histórico. Para produção com vários servidores, recomenda-se PostgreSQL e uma fila durável como BullMQ/Redis ou Cloud Tasks.
+AppSettings armazena as configurações globais. HiddenUploadJob implementa a remoção reversível do histórico. Para vários servidores de upload, recomenda-se também uma fila durável como BullMQ/Redis ou Cloud Tasks.
 
 ## Segurança
 
@@ -159,7 +162,7 @@ Esse teste usa uploads reais e consome quota do YouTube.
 
 O arquivo ABRIR-AULASYNC.cmd inicia também um motor independente e invisível de uploads. Depois que ele estiver ativo, fechar o navegador ou a janela principal do AulaSync não interrompe os envios. O computador precisa permanecer ligado, sem suspensão, e conectado à internet.
 
-O worker consulta tarefas pendentes a cada cinco segundos, mantém as sessões resumable e usa um lease no SQLite para impedir que a interface e o processo de fundo executem a mesma tarefa. Se o processo for interrompido, o lease expira e outro worker pode retomar a tarefa com segurança. Logs operacionais ficam na pasta .runtime e não incluem tokens.
+O worker consulta tarefas pendentes a cada cinco segundos, mantém as sessões resumable e usa um lease no PostgreSQL para impedir que a interface e o processo de fundo executem a mesma tarefa. Se o processo for interrompido, o lease expira e outro worker pode retomar a tarefa com segurança. Logs operacionais ficam na pasta .runtime e não incluem tokens.
 
 O worker é iniciado ao abrir o AulaSync. Depois de reiniciar o Windows, execute ABRIR-AULASYNC.cmd novamente para reativá-lo.
 
@@ -175,7 +178,7 @@ A área **Administração > Usuários** permite ao administrador criar acessos m
 - Bloquear, alterar a função ou redefinir a senha invalida as sessões anteriores do usuário.
 - O sistema impede que o último administrador ativo seja bloqueado, rebaixado ou excluído.
 
-O usuário inicial continua sendo configurado pelas variáveis `ADMIN_NAME`, `ADMIN_EMAIL` e `ADMIN_PASSWORD`. Para redefinir com segurança a senha do administrador existente, mantenha o mesmo `ADMIN_EMAIL`, informe a nova `ADMIN_PASSWORD`, defina `ADMIN_FORCE_PASSWORD_RESET=true` e publique. Depois do primeiro acesso, volte a variável para `false` e publique novamente. Nenhuma senha deve ser gravada no GitHub. Após publicar uma atualização, entre novamente para que a sessão receba as novas permissões.
+O usuário inicial continua sendo configurado pelas variáveis `ADMIN_NAME`, `ADMIN_EMAIL` e `ADMIN_PASSWORD`. Para redefinir a senha do administrador, mantenha o mesmo `ADMIN_EMAIL`, altere `ADMIN_PASSWORD` na hospedagem e publique novamente. A senha configurada é sincronizada na primeira inicialização de cada publicação. Nenhuma senha deve ser gravada no GitHub. Após publicar uma atualização, entre novamente para que a sessão receba as novas permissões.
 
 
 ## Isolamento entre usuários
