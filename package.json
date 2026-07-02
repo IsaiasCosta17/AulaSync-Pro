@@ -7,15 +7,18 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/validate-production-env.mjs && node scripts/fix-prisma-permissions.mjs && prisma generate && prisma db push --accept-data-loss && prisma db seed && next build",
+    "build": "node scripts/prepare-production.mjs",
     "start": "next start -H 0.0.0.0",
-    "db:push": "prisma db push --accept-data-loss",
+    "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
-    "deploy:setup": "node scripts/validate-production-env.mjs && node scripts/fix-prisma-permissions.mjs && prisma generate && prisma db push --accept-data-loss && prisma db seed && next build",
+    "deploy:setup": "node scripts/prepare-production.mjs",
     "postinstall": "prisma generate && node scripts/fix-prisma-permissions.mjs",
     "prisma:permissions": "node scripts/fix-prisma-permissions.mjs",
-    "predeploy:check": "node scripts/validate-production-env.mjs"
+    "predeploy:check": "node scripts/validate-production-env.mjs",
+    "prepare:production": "node scripts/prepare-production.mjs",
+    "typecheck": "tsc --noEmit",
+    "ci:check": "node scripts/validate-production-env.mjs && prisma generate && tsc --noEmit && next build"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -45,5 +48,6 @@
     "tailwindcss": "^3.4.17",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
-  }
+  },
+  "packageManager": "pnpm@11.9.0"
 }
