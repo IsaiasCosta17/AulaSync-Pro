@@ -8,4 +8,6 @@ export const prisma =
     log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
   });
 
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+// Reutiliza um único cliente também em produção para reduzir processos duplicados
+// e bloqueios concorrentes no arquivo SQLite.
+globalForPrisma.prisma = prisma;
