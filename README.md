@@ -65,7 +65,8 @@ Em produção, use domínio HTTPS, troque as URLs de callback e conclua a verifi
 | DATABASE_URL | Banco SQLite do MVP, normalmente file:./dev.db |
 | ADMIN_NAME | Nome do administrador inicial |
 | ADMIN_EMAIL | E-mail de login |
-| ADMIN_PASSWORD | Senha inicial |
+| ADMIN_PASSWORD | Senha inicial ou nova senha administrativa |
+| ADMIN_FORCE_PASSWORD_RESET | Use true em uma única publicação para redefinir a senha do administrador existente |
 | AUTH_SECRET | Assinatura de sessão e estado OAuth |
 | TOKEN_ENCRYPTION_KEY | Chave Base64 de 32 bytes para criptografar tokens |
 | GOOGLE_CLIENT_ID | Cliente OAuth do Google |
@@ -174,7 +175,7 @@ A área **Administração > Usuários** permite ao administrador criar acessos m
 - Bloquear, alterar a função ou redefinir a senha invalida as sessões anteriores do usuário.
 - O sistema impede que o último administrador ativo seja bloqueado, rebaixado ou excluído.
 
-O usuário inicial continua sendo configurado pelas variáveis `ADMIN_NAME`, `ADMIN_EMAIL` e `ADMIN_PASSWORD`. Após publicar uma atualização, entre novamente para que a sessão receba as novas permissões.
+O usuário inicial continua sendo configurado pelas variáveis `ADMIN_NAME`, `ADMIN_EMAIL` e `ADMIN_PASSWORD`. Para redefinir com segurança a senha do administrador existente, mantenha o mesmo `ADMIN_EMAIL`, informe a nova `ADMIN_PASSWORD`, defina `ADMIN_FORCE_PASSWORD_RESET=true` e publique. Depois do primeiro acesso, volte a variável para `false` e publique novamente. Nenhuma senha deve ser gravada no GitHub. Após publicar uma atualização, entre novamente para que a sessão receba as novas permissões.
 
 
 ## Isolamento entre usuários
