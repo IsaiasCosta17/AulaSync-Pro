@@ -1,0 +1,53 @@
+name: Verificação automática
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: TypeScript e Next.js
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+      ADMIN_NAME: Administrador CI
+      ADMIN_EMAIL: ci@aulasync.local
+      ADMIN_PASSWORD: CI-password-strong-2026
+      AUTH_SECRET: ci-auth-secret-only-for-validation-000000000000
+      TOKEN_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      GOOGLE_CLIENT_ID: ci-client-id.apps.googleusercontent.com
+      GOOGLE_CLIENT_SECRET: ci-client-secret
+      GOOGLE_REDIRECT_URI_DRIVE: http://localhost:3000/api/oauth/google/drive/callback
+      GOOGLE_REDIRECT_URI_YOUTUBE: http://localhost:3000/api/oauth/google/youtube/callback
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Preparar pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Instalar dependências
+        run: pnpm install --frozen-lockfile
+
+      - name: Validar TypeScript e build
+        run: pnpm run ci:check
