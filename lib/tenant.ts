@@ -4,61 +4,66 @@ import type { SessionPayload } from "@/lib/auth";
 
 let tenantSchemaPromise: Promise<void> | null = null;
 
-async function hasColumn(table: string, column: string) {
-  const rows = await prisma.$queryRawUnsafe<Array<{ name: string }>>(
-    `PRAGMA table_info("${table.replaceAll('"', '')}")`,
-  );
-  return rows.some((row) => row.name === column);
-}
-
 export async function ensureTenantSchema() {
   if (!tenantSchemaPromise) {
     tenantSchemaPromise = (async () => {
-      for (const table of ["GoogleDriveAccount", "YoutubeChannel", "UploadJob"]) {
-        if (!(await hasColumn(table, "userId"))) {
-          await prisma.$executeRawUnsafe(
-            `ALTER TABLE "${table}" ADD COLUMN "userId" TEXT`,
-          );
-        }
-      }
-
-      const admins = await prisma.$queryRawUnsafe<Array<{ id: string }>>(
-        'SELECT u."id" FROM "User" u JOIN "UserAccess" a ON a."userId" = u."id" ' +
-        'WHERE a."role" = \'ADMIN\' AND a."isActive" = 1 ORDER BY u."createdAt" ASC LIMIT 1',
-      );
-      const fallbackUsers = await prisma.user.findMany({
-        select: { id: true },
-        orderBy: { createdAt: "asc" },
-        take: 1,
+      const adminAccess = await prisma.userAccess.findFirst({
+        where: { role: "ADMIN", isActive: true },
+        orderBy: { updatedAt: "asc" },
+        select: { userId: true },
       });
-      const ownerId = admins[0]?.id || fallbackUsers[0]?.id;
+      const fallbackUser = await prisma.user.findFirst({
+        orderBy: { createdAt: "asc" },
+        select: { id: true },
+      });
+      const ownerId = adminAccess?.userId || fallbackUser?.id;
       if (!ownerId) return;
 
-      await prisma.$executeRawUnsafe(
-        'UPDATE "GoogleDriveAccount" SET "userId" = ? WHERE "userId" IS NULL OR "userId" = \'\'',
-        ownerId,
-      );
-      await prisma.$executeRawUnsafe(
-        'UPDATE "YoutubeChannel" SET "userId" = ? WHERE "userId" IS NULL OR "userId" = \'\'',
-        ownerId,
-      );
-      await prisma.$executeRawUnsafe(
-        'UPDATE "UploadJob" SET "userId" = ? WHERE "userId" IS NULL OR "userId" = \'\'',
-        ownerId,
-      );
+      await Promise.all([
+        prisma.googleDriveAccount.updateMany({
+          where: { OR: [{ userId: null }, { userId: "" }] },
+          data: { userId: ownerId },
+        }),
+        prisma.youtubeChannel.updateMany({
+          where: { OR: [{ userId: null }, { userId: "" }] },
+          data: { userId: ownerId },
+        }),
+        prisma.uploadJob.updateMany({
+          where: { OR: [{ userId: null }, { userId: "" }] },
+          data: { userId: ownerId },
+        }),
+      ]);
 
-      await prisma.$executeRawUnsafe(
-        'INSERT OR IGNORE INTO "AppSettings" SELECT ?, "maxConcurrentUploads", "temporaryRetrySeconds", ' +
-        '"quotaRetryMinutes", "defaultPrivacy", "defaultDescription", "defaultTags", ' +
-        '"defaultThumbnailDriveFileId", "duplicateCheckEnabled", "adaptiveConcurrencyEnabled", CURRENT_TIMESTAMP ' +
-        'FROM "AppSettings" WHERE "id" = \'global\'',
-        ownerId,
-      ).catch(() => undefined);
-      await prisma.$executeRawUnsafe(
-        'INSERT OR IGNORE INTO "NotificationState" ("id", "lastReadAt") ' +
-        'SELECT ?, "lastReadAt" FROM "NotificationState" WHERE "id" = \'global\'',
-        ownerId,
-      ).catch(() => undefined);
+      const globalSettings = await prisma.appSettings.findUnique({ where: { id: "global" } });
+      if (globalSettings) {
+        await prisma.appSettings.upsert({
+          where: { id: ownerId },
+          update: {},
+          create: {
+            id: ownerId,
+            maxConcurrentUploads: globalSettings.maxConcurrentUploads,
+            temporaryRetrySeconds: globalSettings.temporaryRetrySeconds,
+            quotaRetryMinutes: globalSettings.quotaRetryMinutes,
+            defaultPrivacy: globalSettings.defaultPrivacy,
+            defaultDescription: globalSettings.defaultDescription,
+            defaultTags: globalSettings.defaultTags,
+            defaultThumbnailDriveFileId: globalSettings.defaultThumbnailDriveFileId,
+            duplicateCheckEnabled: globalSettings.duplicateCheckEnabled,
+            adaptiveConcurrencyEnabled: globalSettings.adaptiveConcurrencyEnabled,
+          },
+        });
+      }
+
+      const globalNotifications = await prisma.notificationState.findUnique({
+        where: { id: "global" },
+      });
+      if (globalNotifications) {
+        await prisma.notificationState.upsert({
+          where: { id: ownerId },
+          update: {},
+          create: { id: ownerId, lastReadAt: globalNotifications.lastReadAt },
+        });
+      }
     })().catch((error) => {
       tenantSchemaPromise = null;
       throw error;
@@ -81,20 +86,20 @@ export function tenantWhere(userId: string) {
 export async function ownsDriveAccount(userId: string, accountId: string) {
   await ensureTenantSchema();
   return prisma.googleDriveAccount.findFirst({
-    where: { id: accountId, userId } as never,
+    where: { id: accountId, userId },
   });
 }
 
 export async function ownsYoutubeChannel(userId: string, channelId: string) {
   await ensureTenantSchema();
   return prisma.youtubeChannel.findFirst({
-    where: { id: channelId, userId } as never,
+    where: { id: channelId, userId },
   });
 }
 
 export async function ownsUploadJob(userId: string, jobId: string) {
   await ensureTenantSchema();
   return prisma.uploadJob.findFirst({
-    where: { id: jobId, userId } as never,
+    where: { id: jobId, userId },
   });
 }
