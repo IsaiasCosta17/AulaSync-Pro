@@ -990,7 +990,9 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
         await log(job.id, "warn", `${item.title}: ${message}`);
       } else {
         if (!dailyQuota) await recordTemporaryFailure(job.id, job.channelId);
-        const delay = await automaticRetryDelay(job.id, dailyQuota);
+        const delay = googleStatus(error) === 429
+          ? 60 * 60_000
+          : await automaticRetryDelay(job.id, dailyQuota);
         const retryMessage = dailyQuota
           ? "Quota diária do projeto YouTube atingida. Nova tentativa automática em 24 horas."
           : `${message} Nova tentativa automática em ${formatRetryDelay(delay)}.`;
@@ -1191,7 +1193,9 @@ export async function runUploadJob(jobId: string) {
       await log(jobId, "warn", message).catch(() => undefined);
     } else {
       if (!dailyQuota) await recordTemporaryFailure(jobId);
-      const delay = await automaticRetryDelay(jobId, dailyQuota).catch(() => dailyQuota ? CHANNEL_DAILY_COOLDOWN_MS : 60_000);
+      const delay = googleStatus(error) === 429
+        ? 60 * 60_000
+        : await automaticRetryDelay(jobId, dailyQuota).catch(() => dailyQuota ? CHANNEL_DAILY_COOLDOWN_MS : 60_000);
       await prisma.uploadJob.update({
         where: { id: jobId },
         data: {

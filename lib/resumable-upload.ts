@@ -214,7 +214,8 @@ async function withRetry<T>(options: UploadOptions, operation: () => Promise<T>)
       await waitForRateLimitWindow(options);
       return await operation();
     } catch (error) {
-      if (!isRetryableGoogleError(error) || attempt >= maxRetries()) throw error;
+      const retryLimit = statusFromError(error) === 429 ? 3 : maxRetries();
+      if (!isRetryableGoogleError(error) || attempt >= retryLimit) throw error;
       attempt += 1;
       const delay = retryDelay(attempt, error);
       rememberRateLimit(options, error, delay);
@@ -404,7 +405,8 @@ export async function uploadVideoResumable(options: UploadOptions) {
         ));
         break;
       } catch (error) {
-        if (!isRetryableGoogleError(error) || attempt >= maxRetries()) throw error;
+        const retryLimit = statusFromError(error) === 429 ? 3 : maxRetries();
+      if (!isRetryableGoogleError(error) || attempt >= retryLimit) throw error;
         attempt += 1;
         const delay = retryDelay(attempt, error);
         rememberRateLimit(options, error, delay);
