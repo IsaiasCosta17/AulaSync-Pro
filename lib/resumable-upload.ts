@@ -72,6 +72,28 @@ function statusFromError(error: unknown) {
   return typeof candidate?.code === "number" ? candidate.code : undefined;
 }
 
+function googleErrorContext(error: unknown) {
+  const candidate = error as {
+    config?: { url?: string };
+    response?: { config?: { url?: string }; data?: unknown };
+  };
+  const url = candidate?.response?.config?.url || candidate?.config?.url || "";
+  const service = /drive\.googleapis|\/drive\/v3/i.test(url)
+    ? "Google Drive"
+    : /youtube|upload\/youtube/i.test(url)
+      ? "YouTube"
+      : "Google";
+  let reason = "";
+  const data = candidate?.response?.data;
+  if (data && typeof data === "object") {
+    const payload = data as {
+      error?: { errors?: Array<{ reason?: string }>; status?: string; message?: string };
+    };
+    reason = payload.error?.errors?.[0]?.reason || payload.error?.status || "";
+  }
+  return { service, reason };
+}
+
 export function isRetryableGoogleError(error: unknown) {
   const status = statusFromError(error);
   if (status && RETRYABLE_STATUS.has(status)) return true;
@@ -102,10 +124,12 @@ function retryDelay(attempt: number, error?: unknown) {
 
 function retryReason(error: unknown) {
   const status = statusFromError(error);
-  if (status === 408) return "tempo limite do Google";
-  if (status === 429) return "muitas solicitações ao Google";
-  if (status && status >= 500) return `instabilidade temporária do Google (${status})`;
-  return "interrupção temporária de rede";
+  const { service, reason } = googleErrorContext(error);
+  const detail = reason ? " (" + reason + ")" : "";
+  if (status === 408) return "tempo limite no " + service + detail;
+  if (status === 429) return "muitas solicitações ao " + service + detail;
+  if (status && status >= 500) return "instabilidade temporária no " + service + " (" + status + ")" + detail;
+  return "interrupção temporária de rede no " + service + detail;
 }
 
 function throwIfAborted(signal?: AbortSignal) {
@@ -162,7 +186,11 @@ export function friendlyGoogleError(error: unknown) {
   if (status === 408) return "O Google demorou a responder. A sessão foi preservada e pode ser retomada.";
   if (status === 401) return "A autorização Google expirou. Reconecte a conta e tente novamente.";
   if (status === 403) return "O Google recusou a operação. Verifique as permissões, a quota e o canal selecionado.";
-  if (status === 429) return "O Google aplicou um limite temporário neste canal. A retomada será automática sem interromper os outros canais.";
+  if (status === 429) {
+    const { service, reason } = googleErrorContext(error);
+    const detail = reason ? " (" + reason + ")" : "";
+    return "O " + service + " aplicou um limite temporário" + detail + ". A retomada será automática.";
+  }
   if (status && status >= 500) return "O Google apresentou uma instabilidade temporária. A sessão foi preservada para retomada.";
 
   let apiMessage = "";
