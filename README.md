@@ -79,7 +79,9 @@ Use a URI PostgreSQL fornecida pelo Supabase em `DATABASE_URL`. A variável deve
 | GOOGLE_CLIENT_SECRET | Segredo OAuth do Google |
 | GOOGLE_REDIRECT_URI_DRIVE | Callback do Drive |
 | GOOGLE_REDIRECT_URI_YOUTUBE | Callback do YouTube |
-| MAX_CONCURRENT_DRIVE_STREAMS_PER_ACCOUNT | Leituras simultâneas por conta Drive; padrão seguro 3 |
+| MAX_CONCURRENT_DRIVE_STREAMS_PER_ACCOUNT | Leituras simultâneas por conta Drive; limite seguro 2 |
+| MAX_CONCURRENT_UPLOADS_GLOBAL | Uploads ativos em toda a instalação; padrão 4 para evitar bloqueios 429 |
+| GOOGLE_API_REQUEST_SPACING_MS | Intervalo entre chamadas auxiliares às APIs Google; padrão 250 ms |
 | UPLOAD_CHUNK_SIZE_MB | Tamanho dos blocos do resumable; padrão 8 MB |
 | UPLOAD_MAX_RETRIES | Tentativas por bloco; padrão 8 |
 | UPLOAD_REQUEST_TIMEOUT_MS | Timeout de cada solicitação; padrão 120000 ms |

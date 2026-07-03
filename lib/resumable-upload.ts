@@ -11,6 +11,7 @@ type UploadOptions = {
   description: string;
   tags: string[];
   privacyStatus: string;
+  rateLimitKey?: string;
   mimeType: string;
   totalSize: bigint;
   sessionUri?: string | null;
@@ -28,6 +29,7 @@ type SessionState =
 
 const CHUNK_GRANULARITY = 256 * 1024;
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const rateLimitedUntilByKey = new Map<string, number>();
 
 function positiveInt(name: string, fallback: number, minimum = 1, maximum = Number.MAX_SAFE_INTEGER) {
   const value = Number(process.env[name]);
@@ -90,9 +92,12 @@ function retryAfterMs(error: unknown) {
 
 function retryDelay(attempt: number, error?: unknown) {
   const requested = error ? retryAfterMs(error) : null;
-  if (requested !== null) return Math.min(requested, 60_000);
-  const exponential = Math.min(30_000, 1000 * 2 ** Math.max(0, attempt - 1));
-  return exponential + Math.floor(Math.random() * 500);
+  const status = error ? statusFromError(error) : undefined;
+  if (requested !== null) return Math.min(requested, status === 429 ? 5 * 60_000 : 60_000);
+  const exponential = status === 429
+    ? Math.min(120_000, 5000 * 2 ** Math.max(0, attempt - 1))
+    : Math.min(30_000, 1000 * 2 ** Math.max(0, attempt - 1));
+  return exponential + Math.floor(Math.random() * (status === 429 ? 5000 : 500));
 }
 
 function retryReason(error: unknown) {
@@ -129,6 +134,21 @@ async function wait(delayMs: number, signal?: AbortSignal) {
   });
 }
 
+async function waitForRateLimitWindow(options: UploadOptions) {
+  const key = options.rateLimitKey || "youtube";
+  const delay = Math.max(0, (rateLimitedUntilByKey.get(key) ?? 0) - Date.now());
+  if (delay) await wait(delay, options.signal);
+}
+
+function rememberRateLimit(options: UploadOptions, error: unknown, delayMs: number) {
+  if (statusFromError(error) !== 429) return;
+  const key = options.rateLimitKey || "youtube";
+  rateLimitedUntilByKey.set(
+    key,
+    Math.max(rateLimitedUntilByKey.get(key) ?? 0, Date.now() + delayMs),
+  );
+}
+
 export function friendlyGoogleError(error: unknown) {
   const status = statusFromError(error);
   const candidate = error as {
@@ -142,7 +162,7 @@ export function friendlyGoogleError(error: unknown) {
   if (status === 408) return "O Google demorou a responder. A sessão foi preservada e pode ser retomada.";
   if (status === 401) return "A autorização Google expirou. Reconecte a conta e tente novamente.";
   if (status === 403) return "O Google recusou a operação. Verifique as permissões, a quota e o canal selecionado.";
-  if (status === 429) return "O Google recebeu solicitações demais. Aguarde alguns minutos e retome a tarefa.";
+  if (status === 429) return "O Google aplicou um limite temporário neste canal. A retomada será automática sem interromper os outros canais.";
   if (status && status >= 500) return "O Google apresentou uma instabilidade temporária. A sessão foi preservada para retomada.";
 
   let apiMessage = "";
@@ -163,11 +183,13 @@ async function withRetry<T>(options: UploadOptions, operation: () => Promise<T>)
   while (true) {
     throwIfAborted(options.signal);
     try {
+      await waitForRateLimitWindow(options);
       return await operation();
     } catch (error) {
       if (!isRetryableGoogleError(error) || attempt >= maxRetries()) throw error;
       attempt += 1;
       const delay = retryDelay(attempt, error);
+      rememberRateLimit(options, error, delay);
       options.onRetry?.(attempt, delay, retryReason(error));
       await wait(delay, options.signal);
     }
@@ -308,6 +330,7 @@ export async function uploadVideoResumable(options: UploadOptions) {
     while (true) {
       throwIfAborted(options.signal);
       try {
+        await waitForRateLimitWindow(options);
         const chunkStart = offset;
         const response = await options.auth.request<VideoResult>({
           url: sessionUri,
@@ -356,6 +379,7 @@ export async function uploadVideoResumable(options: UploadOptions) {
         if (!isRetryableGoogleError(error) || attempt >= maxRetries()) throw error;
         attempt += 1;
         const delay = retryDelay(attempt, error);
+        rememberRateLimit(options, error, delay);
         options.onRetry?.(attempt, delay, retryReason(error));
         await wait(delay, options.signal);
         const state = await inspectSession(options.auth, sessionUri, options.totalSize, options);

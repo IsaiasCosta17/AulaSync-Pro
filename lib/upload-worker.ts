@@ -25,7 +25,11 @@ const sourceLocks = new Map<string, Promise<void>>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const activeUploadItemsByChannel = new Map<string, Set<string>>();
 const activeUploadItemsByDriveAccount = new Map<string, Set<string>>();
+const activeUploadItemsGlobal = new Set<string>();
 const uploadSlotWaiters: Array<() => void> = [];
+const googleOperationBlockedUntil = new Map<string, number>();
+let googleOperationQueue = Promise.resolve();
+let nextGoogleOperationAt = 0;
 const concurrencyStateByChannel = new Map<string, {
   penalty: number;
   recentTemporaryFailures: number[];
@@ -244,7 +248,11 @@ async function effectiveConcurrency(jobId: string, channelId: string) {
 }
 
 function driveConcurrencyLimit() {
-  return positiveInt("MAX_CONCURRENT_DRIVE_STREAMS_PER_ACCOUNT", 3, 10);
+  return positiveInt("MAX_CONCURRENT_DRIVE_STREAMS_PER_ACCOUNT", 2, 2);
+}
+
+function globalUploadConcurrencyLimit() {
+  return positiveInt("MAX_CONCURRENT_UPLOADS_GLOBAL", 4, 20);
 }
 
 async function acquireUploadSlot(
@@ -257,9 +265,14 @@ async function acquireUploadSlot(
     const { limit } = await effectiveConcurrency(jobId, channelId);
     const activeChannelItems = activeItemsForChannel(channelId);
     const activeDriveItems = activeItemsForDriveAccount(driveAccountId);
-    if (activeChannelItems.size < limit && activeDriveItems.size < driveConcurrencyLimit()) {
+    if (
+      activeChannelItems.size < limit &&
+      activeDriveItems.size < driveConcurrencyLimit() &&
+      activeUploadItemsGlobal.size < globalUploadConcurrencyLimit()
+    ) {
       activeChannelItems.add(itemId);
       activeDriveItems.add(itemId);
+      activeUploadItemsGlobal.add(itemId);
       return;
     }
     await new Promise<void>((resolve) => uploadSlotWaiters.push(resolve));
@@ -274,6 +287,7 @@ function releaseUploadConcurrencySlot(itemId: string, channelId: string, driveAc
   const activeDriveItems = activeUploadItemsByDriveAccount.get(driveAccountId);
   activeDriveItems?.delete(itemId);
   if (activeDriveItems?.size === 0) activeUploadItemsByDriveAccount.delete(driveAccountId);
+  activeUploadItemsGlobal.delete(itemId);
   wakeUploadWaiters();
 }
 
@@ -471,16 +485,66 @@ async function clearExpiredChannelQuota(channelId: string) {
   });
 }
 
-async function retryGoogleOperation<T>(operation: () => Promise<T>) {
+function googleStatus(error: unknown) {
+  const candidate = error as { code?: number | string; response?: { status?: number } };
+  const status = candidate?.response?.status ?? candidate?.code;
+  return typeof status === "number" ? status : Number(status) || undefined;
+}
+
+function googleRetryAfter(error: unknown) {
+  const headers = (error as { response?: { headers?: { get?: (name: string) => string | null; [key: string]: unknown } } })
+    ?.response?.headers;
+  const raw = typeof headers?.get === "function"
+    ? headers.get("retry-after")
+    : headers?.["retry-after"];
+  if (raw == null) return null;
+  const seconds = Number(Array.isArray(raw) ? raw[0] : raw);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(String(raw));
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
+}
+
+async function waitForGoogleOperationWindow(key: string) {
+  const keyDelay = Math.max(0, (googleOperationBlockedUntil.get(key) ?? 0) - Date.now());
+  if (keyDelay) await new Promise((resolve) => setTimeout(resolve, keyDelay));
+
+  let release: () => void = () => undefined;
+  const previous = googleOperationQueue;
+  googleOperationQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    const delay = Math.max(0, nextGoogleOperationAt - Date.now());
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    nextGoogleOperationAt = Date.now() + positiveInt("GOOGLE_API_REQUEST_SPACING_MS", 250, 2000);
+  } finally {
+    release();
+  }
+}
+
+async function retryGoogleOperation<T>(operation: () => Promise<T>, key = "google") {
   let attempt = 0;
   while (true) {
     try {
+      await waitForGoogleOperationWindow(key);
       return await operation();
     } catch (error) {
-      if (!isRetryableGoogleError(error) || attempt >= 5) throw error;
-      const delay = Math.min(15_000, 1000 * 2 ** attempt) + Math.floor(Math.random() * 300);
+      if (!isRetryableGoogleError(error) || attempt >= 8) throw error;
+      const status = googleStatus(error);
+      const requested = googleRetryAfter(error);
+      const baseDelay = status === 429
+        ? Math.min(120_000, 5000 * 2 ** attempt)
+        : Math.min(30_000, 1000 * 2 ** attempt);
+      const delay = Math.min(
+        status === 429 ? 5 * 60_000 : 60_000,
+        requested ?? baseDelay,
+      ) + Math.floor(Math.random() * (status === 429 ? 5000 : 500));
+      googleOperationBlockedUntil.set(
+        key,
+        Math.max(googleOperationBlockedUntil.get(key) ?? 0, Date.now() + delay),
+      );
       attempt += 1;
-      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 }
@@ -531,7 +595,7 @@ async function ensurePlaylist(jobId: string) {
       part: ["id"],
       id: [job.playlist!.youtubePlaylistId],
       maxResults: 1,
-    }));
+    }), "youtube:" + job.channelId);
     if (check.data.items?.length) return job.playlist;
     await log(jobId, "warn", "A playlist anterior não existe mais; uma nova será criada automaticamente.");
     await prisma.uploadJob.update({ where: { id: jobId }, data: { playlistId: null } });
@@ -544,7 +608,7 @@ async function ensurePlaylist(jobId: string) {
       snippet: { title: playlistName },
       status: { privacyStatus: job.privacyStatus },
     },
-  }));
+  }), "youtube:" + job.channelId);
   const youtubePlaylistId = result.data.id;
   if (!youtubePlaylistId) throw new Error("O YouTube não devolveu o ID da playlist.");
 
@@ -562,18 +626,16 @@ async function ensurePlaylist(jobId: string) {
 async function validateGoogleConnections(job: JobContext) {
   const drive = driveClient(job.driveAccount);
   const youtube = youtubeClient(job.channel);
-  const [, channels] = await Promise.all([
-    drive.files.get({
-      fileId: "root",
-      fields: "id",
-      supportsAllDrives: true,
-    }),
-    youtube.channels.list({
-      part: ["id"],
-      mine: true,
-      maxResults: 50,
-    }),
-  ]);
+  await retryGoogleOperation(() => drive.files.get({
+    fileId: "root",
+    fields: "id",
+    supportsAllDrives: true,
+  }), "drive:" + job.driveAccountId);
+  const channels = await retryGoogleOperation(() => youtube.channels.list({
+    part: ["id"],
+    mine: true,
+    maxResults: 50,
+  }), "youtube:" + job.channelId);
   const authorized = channels.data.items?.some(
     (channel) => channel.id === job.channel.youtubeChannelId,
   );
@@ -651,7 +713,7 @@ async function applyDefaultThumbnail(
     await retryGoogleOperation(() => youtube.thumbnails.set({
       videoId,
       media: { mimeType, body: media.data },
-    }));
+    }), "youtube:" + job.channelId);
     await log(job.id, "success", `Miniatura padrão aplicada em ${item.title}.`);
   } catch (error) {
     await log(
@@ -672,7 +734,7 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
     fileId: item.driveFileId,
     fields: "id,name,size,mimeType,trashed",
     supportsAllDrives: true,
-  }));
+  }), "drive:" + job.driveAccountId);
   if (!metadata.data.id || metadata.data.trashed) {
     throw new Error("O arquivo da aula não existe mais no Google Drive.");
   }
@@ -760,6 +822,7 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
             .filter(Boolean)
             .slice(0, 30),
           privacyStatus: job.privacyStatus,
+          rateLimitKey: job.channelId,
           mimeType: item.mimeType,
           totalSize,
           sessionUri,
@@ -827,7 +890,7 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
       playlistId: playlist.youtubePlaylistId,
       videoId: confirmedVideoId,
       maxResults: 1,
-    }));
+    }), "youtube:" + job.channelId);
     if (!existingPlaylistItem.data.items?.length) {
       await retryGoogleOperation(() => youtube.playlistItems.insert({
         part: ["snippet"],
@@ -837,7 +900,7 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
             resourceId: { kind: "youtube#video", videoId: confirmedVideoId },
           },
         },
-      }));
+      }), "youtube:" + job.channelId);
     }
 
     await applyDefaultThumbnail(job, item, confirmedVideoId, settings);
@@ -939,7 +1002,7 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
           prisma.uploadJob.update({
             where: { id: job.id },
             data: {
-              status: dailyQuota ? JobStatus.QUOTA_REACHED : JobStatus.PENDING,
+              status: dailyQuota ? JobStatus.QUOTA_REACHED : JobStatus.RUNNING,
               errorMessage: retryMessage,
               completedAt: null,
             },
@@ -1083,7 +1146,7 @@ export async function runUploadJob(jobId: string) {
     if (current.status !== JobStatus.RUNNING) return;
 
     const finalStatus = pending
-      ? JobStatus.PAUSED
+      ? JobStatus.PENDING
       : errors
         ? JobStatus.FAILED
         : JobStatus.COMPLETED;
@@ -1094,8 +1157,12 @@ export async function runUploadJob(jobId: string) {
         status: finalStatus,
         progress: pending || errors ? undefined : 100,
         completedAt: pending ? null : new Date(),
-        nextRetryAt: null,
-        errorMessage: errors ? `${errors} aula(s) com erro permanente. É possível reenviá-las.` : null,
+        nextRetryAt: pending ? current.nextRetryAt : null,
+        errorMessage: pending
+          ? current.errorMessage
+          : errors
+            ? errors + " aula(s) com erro permanente. É possível reenviá-las."
+            : null,
       },
     });
     if (finalStatus === JobStatus.COMPLETED) {
