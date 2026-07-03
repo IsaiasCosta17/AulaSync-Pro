@@ -4,6 +4,7 @@ import { JWTPayload, jwtVerify } from "jose";
 const COOKIE = "aulasync_session";
 const publicPaths = [
   "/login",
+  "/recuperar-senha",
   "/sobre",
   "/politica-de-privacidade",
   "/termos-de-uso",
