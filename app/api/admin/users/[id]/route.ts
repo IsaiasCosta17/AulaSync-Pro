@@ -57,13 +57,13 @@ export async function PATCH(
       const passwordHash = await bcrypt.hash(body.password, 12);
       await prisma.$transaction(async (tx) => {
         await tx.user.update({ where: { id }, data: { passwordHash } });
-        await tx.$executeRaw`
-          UPDATE "UserAccess"
-          SET "mustChangePassword" = 1,
-              "sessionVersion" = "sessionVersion" + 1,
-              "updatedAt" = CURRENT_TIMESTAMP
-          WHERE "userId" = ${id}
-        `;
+        await tx.userAccess.update({
+          where: { userId: id },
+          data: {
+            mustChangePassword: true,
+            sessionVersion: { increment: 1 },
+          },
+        });
       });
       await prisma.log.create({
         data: { level: "info", message: `Senha redefinida pela equipe: ${user.email}` },
@@ -99,14 +99,14 @@ export async function PATCH(
     const accessChanged = body.role !== access.role || body.isActive !== access.isActive;
     await prisma.$transaction(async (tx) => {
       await tx.user.update({ where: { id }, data: { name: body.name, email } });
-      await tx.$executeRaw`
-        UPDATE "UserAccess"
-        SET "role" = ${body.role},
-            "isActive" = ${body.isActive ? 1 : 0},
-            "sessionVersion" = "sessionVersion" + ${accessChanged ? 1 : 0},
-            "updatedAt" = CURRENT_TIMESTAMP
-        WHERE "userId" = ${id}
-      `;
+      await tx.userAccess.update({
+        where: { userId: id },
+        data: {
+          role: body.role,
+          isActive: body.isActive,
+          ...(accessChanged ? { sessionVersion: { increment: 1 } } : {}),
+        },
+      });
     });
 
     await prisma.log.create({
@@ -165,17 +165,15 @@ export async function DELETE(
       SET "status" = 'CANCELLED', "completedAt" = CURRENT_TIMESTAMP
       WHERE "userId" = ${id} AND "status" IN ('PENDING', 'RUNNING', 'PAUSED', 'QUOTA_REACHED')
     `;
-    await tx.$executeRaw`
-      UPDATE "GoogleDriveAccount"
-      SET "isActive" = 0, "encryptedTokens" = ''
-      WHERE "userId" = ${id}
-    `;
-    await tx.$executeRaw`
-      UPDATE "YoutubeChannel"
-      SET "isActive" = 0, "encryptedTokens" = ''
-      WHERE "userId" = ${id}
-    `;
-    await tx.$executeRaw`DELETE FROM "UserAccess" WHERE "userId" = ${id}`;
+    await tx.googleDriveAccount.updateMany({
+      where: { userId: id },
+      data: { isActive: false, encryptedTokens: "" },
+    });
+    await tx.youtubeChannel.updateMany({
+      where: { userId: id },
+      data: { isActive: false, encryptedTokens: "" },
+    });
+    await tx.userAccess.delete({ where: { userId: id } });
     await tx.user.delete({ where: { id } });
   });
   await prisma.log.create({

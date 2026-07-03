@@ -101,14 +101,16 @@ export async function POST(request: Request) {
         data: { name: body.name, email, passwordHash },
         select: { id: true, name: true, email: true, createdAt: true },
       });
-      await tx.$executeRaw`
-        INSERT INTO "UserAccess"
-          ("userId", "role", "isActive", "mustChangePassword", "sessionVersion",
-           "createdById", "updatedAt")
-        VALUES
-          (${created.id}, ${body.role}, ${body.isActive ? 1 : 0}, 1, 1,
-           ${actor.userId}, CURRENT_TIMESTAMP)
-      `;
+      await tx.userAccess.create({
+        data: {
+          userId: created.id,
+          role: body.role,
+          isActive: body.isActive,
+          mustChangePassword: true,
+          sessionVersion: 1,
+          createdById: actor.userId,
+        },
+      });
       return created;
     });
 
