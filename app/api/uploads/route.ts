@@ -3,7 +3,6 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { runUploadJob } from "@/lib/upload-worker";
 import { youtubeClient } from "@/lib/google";
-import { DEFAULT_PARALLEL_UPLOAD_JOBS } from "@/lib/upload-config";
 import { getHiddenJobIds } from "@/lib/settings";
 import { cleanErrorMessage } from "@/lib/utils";
 import { requireUserSession } from "@/lib/tenant";
@@ -64,10 +63,8 @@ export async function GET(request: Request) {
   const showRemoved = new URL(request.url).searchParams.get("removed") === "1";
   const resultJobs = jobs.filter((job) => showRemoved ? hiddenSet.has(job.id) : !hiddenSet.has(job.id));
 
-  const recoveryLimit = Math.max(1, Number(process.env.MAX_PARALLEL_UPLOAD_JOBS || DEFAULT_PARALLEL_UPLOAD_JOBS));
   jobs
     .filter((job) => ["RUNNING", "PENDING", "QUOTA_REACHED"].includes(job.status))
-    .slice(0, Number.isFinite(recoveryLimit) ? recoveryLimit : DEFAULT_PARALLEL_UPLOAD_JOBS)
     .forEach((job) => queueMicrotask(() => void runUploadJob(job.id)));
 
   return NextResponse.json(serializeJob(resultJobs));

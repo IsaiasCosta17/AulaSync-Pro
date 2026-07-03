@@ -94,20 +94,12 @@ export function SettingsForm({ initialSettings }: { initialSettings: AppSettings
                 <p className="mt-1 text-[10px] text-slate-400">segundos</p>
               </div>
               <div>
-                <label className="label" htmlFor="quota">Nova tentativa por quota</label>
-                <div className="relative">
-                  <RefreshCw className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-                  <input
-                    id="quota"
-                    className="field pl-10"
-                    type="number"
-                    min={5}
-                    max={1440}
-                    value={settings.quotaRetryMinutes}
-                    onChange={(event) => update("quotaRetryMinutes", Number(event.target.value))}
-                  />
+                <label className="label">Limite diário do YouTube</label>
+                <div className="field relative flex items-center pl-10 text-sm font-semibold text-slate-700">
+                  <RefreshCw className="absolute left-3.5 size-4 text-slate-400" />
+                  Retomada automática após 24 horas
                 </div>
-                <p className="mt-1 text-[10px] text-slate-400">minutos</p>
+                <p className="mt-1 text-[10px] text-slate-400">A pausa afeta somente o canal limitado.</p>
               </div>
             </div>
             <Toggle

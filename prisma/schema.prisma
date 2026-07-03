@@ -76,6 +76,8 @@ model YoutubeChannel {
   isActive           Boolean     @default(true)
   dailyUploadCount  Int         @default(0)
   dailyCounterDate  String?
+  quotaBlockedUntil DateTime?
+  quotaBlockReason  String?
   connectedAt       DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
   uploadJobs         UploadJob[]
@@ -122,6 +124,7 @@ model UploadJob {
   errorMessage   String?
   startedAt      DateTime?
   completedAt    DateTime?
+  nextRetryAt    DateTime?
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
   driveAccountId String

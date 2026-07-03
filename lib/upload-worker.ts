@@ -18,21 +18,21 @@ import {
   isRetryableGoogleError,
   uploadVideoResumable,
 } from "@/lib/resumable-upload";
-import {
-  DEFAULT_PARALLEL_UPLOAD_JOBS,
-} from "@/lib/upload-config";
 import { getAppSettings } from "@/lib/settings";
 
 const workers = new Set<string>();
 const sourceLocks = new Map<string, Promise<void>>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const activeUploadItems = new Set<string>();
-const uploadSlotWaiters: Array<() => void> = [];
-let concurrencyPenalty = 0;
-let recentTemporaryFailures: number[] = [];
-let concurrencyRestoreTimer: ReturnType<typeof setTimeout> | null = null;
+const activeUploadItemsByChannel = new Map<string, Set<string>>();
+const uploadSlotWaitersByChannel = new Map<string, Array<() => void>>();
+const concurrencyStateByChannel = new Map<string, {
+  penalty: number;
+  recentTemporaryFailures: number[];
+  restoreTimer: ReturnType<typeof setTimeout> | null;
+}>();
 let lastRecoveryScan = 0;
 const workerOwnerId = randomUUID();
+const CHANNEL_DAILY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 type JobContext = UploadJob & {
   driveAccount: GoogleDriveAccount;
@@ -116,9 +116,9 @@ async function settingsForJob(jobId: string, fresh = false) {
   return getAppSettings((job as { userId?: string } | null)?.userId || "global", { fresh });
 }
 
-async function automaticRetryDelay(jobId: string, quota = false) {
+async function automaticRetryDelay(jobId: string, dailyQuota = false) {
   const settings = await settingsForJob(jobId);
-  if (quota) return settings.quotaRetryMinutes * 60_000;
+  if (dailyQuota) return CHANNEL_DAILY_COOLDOWN_MS;
   const attempts = await prisma.log.count({ where: { jobId, level: "retry" } });
   return Math.min(
     15 * 60_000,
@@ -132,83 +132,128 @@ async function armAutomaticRetry(
   message: string,
   delayMs: number,
 ) {
+  const nextRetryAt = new Date(Date.now() + delayMs);
+  await prisma.uploadJob.update({
+    where: { id: jobId },
+    data: { nextRetryAt },
+  }).catch(() => undefined);
   await log(
     jobId,
     "retry",
     `${itemTitle}: retomada automática em ${Math.ceil(delayMs / 1000)} segundos.`,
-    { delayMs, message },
+    { delayMs, message, nextRetryAt: nextRetryAt.toISOString() },
   ).catch(() => undefined);
   scheduleUploadJob(jobId, delayMs);
 }
 
-async function effectiveConcurrency(jobId: string) {
+function concurrencyState(channelId: string) {
+  const existing = concurrencyStateByChannel.get(channelId);
+  if (existing) return existing;
+  const created = {
+    penalty: 0,
+    recentTemporaryFailures: [] as number[],
+    restoreTimer: null as ReturnType<typeof setTimeout> | null,
+  };
+  concurrencyStateByChannel.set(channelId, created);
+  return created;
+}
+
+function activeItemsForChannel(channelId: string) {
+  const existing = activeUploadItemsByChannel.get(channelId);
+  if (existing) return existing;
+  const created = new Set<string>();
+  activeUploadItemsByChannel.set(channelId, created);
+  return created;
+}
+
+async function effectiveConcurrency(jobId: string, channelId: string) {
   const settings = await settingsForJob(jobId);
-  if (!settings.adaptiveConcurrencyEnabled) concurrencyPenalty = 0;
+  const state = concurrencyState(channelId);
+  if (!settings.adaptiveConcurrencyEnabled) state.penalty = 0;
   return {
     settings,
-    limit: Math.max(1, settings.maxConcurrentUploads - concurrencyPenalty),
+    limit: Math.max(1, settings.maxConcurrentUploads - state.penalty),
   };
 }
 
-function wakeUploadWaiters() {
-  for (const wake of uploadSlotWaiters.splice(0)) wake();
+function wakeUploadWaiters(channelId: string) {
+  const waiters = uploadSlotWaitersByChannel.get(channelId) ?? [];
+  uploadSlotWaitersByChannel.delete(channelId);
+  for (const wake of waiters) wake();
 }
 
-async function acquireUploadSlot(itemId: string, jobId: string) {
+async function acquireUploadSlot(itemId: string, jobId: string, channelId: string) {
   while (true) {
-    const { limit } = await effectiveConcurrency(jobId);
-    if (activeUploadItems.size < limit) {
-      activeUploadItems.add(itemId);
+    const { limit } = await effectiveConcurrency(jobId, channelId);
+    const activeItems = activeItemsForChannel(channelId);
+    if (activeItems.size < limit) {
+      activeItems.add(itemId);
       return;
     }
-    await new Promise<void>((resolve) => uploadSlotWaiters.push(resolve));
+    await new Promise<void>((resolve) => {
+      const waiters = uploadSlotWaitersByChannel.get(channelId) ?? [];
+      waiters.push(resolve);
+      uploadSlotWaitersByChannel.set(channelId, waiters);
+    });
   }
 }
 
-function releaseUploadConcurrencySlot(itemId: string) {
-  activeUploadItems.delete(itemId);
-  wakeUploadWaiters();
+function releaseUploadConcurrencySlot(itemId: string, channelId: string) {
+  const activeItems = activeUploadItemsByChannel.get(channelId);
+  activeItems?.delete(itemId);
+  if (activeItems?.size === 0) activeUploadItemsByChannel.delete(channelId);
+  wakeUploadWaiters(channelId);
 }
 
-function scheduleConcurrencyRestore(jobId: string) {
-  if (concurrencyRestoreTimer) clearTimeout(concurrencyRestoreTimer);
-  concurrencyRestoreTimer = setTimeout(() => {
+function scheduleConcurrencyRestore(jobId: string, channelId: string) {
+  const state = concurrencyState(channelId);
+  if (state.restoreTimer) clearTimeout(state.restoreTimer);
+  state.restoreTimer = setTimeout(() => {
     void (async () => {
       const settings = await settingsForJob(jobId, true);
-      if (!settings.adaptiveConcurrencyEnabled || concurrencyPenalty <= 0) {
-        concurrencyPenalty = 0;
-        wakeUploadWaiters();
+      const current = concurrencyState(channelId);
+      if (!settings.adaptiveConcurrencyEnabled || current.penalty <= 0) {
+        current.penalty = 0;
+        current.restoreTimer = null;
+        wakeUploadWaiters(channelId);
         return;
       }
-      const previous = Math.max(1, settings.maxConcurrentUploads - concurrencyPenalty);
-      concurrencyPenalty -= 1;
-      const restored = Math.max(1, settings.maxConcurrentUploads - concurrencyPenalty);
-      await log(jobId, "info", `Concorrência restaurada gradualmente de ${previous} para ${restored}.`).catch(() => undefined);
-      wakeUploadWaiters();
-      if (concurrencyPenalty > 0) scheduleConcurrencyRestore(jobId);
+      const previous = Math.max(1, settings.maxConcurrentUploads - current.penalty);
+      current.penalty -= 1;
+      const restored = Math.max(1, settings.maxConcurrentUploads - current.penalty);
+      current.restoreTimer = null;
+      await log(jobId, "info", `Concorrência do canal restaurada gradualmente de ${previous} para ${restored}.`).catch(() => undefined);
+      wakeUploadWaiters(channelId);
+      if (current.penalty > 0) scheduleConcurrencyRestore(jobId, channelId);
     })();
   }, 3 * 60_000);
 }
 
-async function recordTemporaryFailure(jobId: string) {
+async function recordTemporaryFailure(jobId: string, knownChannelId?: string) {
   const settings = await settingsForJob(jobId);
   if (!settings.adaptiveConcurrencyEnabled) return;
-  const now = Date.now();
-  recentTemporaryFailures = recentTemporaryFailures.filter((time) => now - time < 2 * 60_000);
-  recentTemporaryFailures.push(now);
-  if (recentTemporaryFailures.length < 3) return;
+  const channelId = knownChannelId ?? (await prisma.uploadJob.findUnique({
+    where: { id: jobId },
+    select: { channelId: true },
+  }))?.channelId;
+  if (!channelId) return;
 
-  const previous = Math.max(1, settings.maxConcurrentUploads - concurrencyPenalty);
+  const state = concurrencyState(channelId);
+  const now = Date.now();
+  state.recentTemporaryFailures = state.recentTemporaryFailures.filter((time) => now - time < 2 * 60_000);
+  state.recentTemporaryFailures.push(now);
+  if (state.recentTemporaryFailures.length < 3) return;
+
+  const previous = Math.max(1, settings.maxConcurrentUploads - state.penalty);
+  state.recentTemporaryFailures = [];
   if (previous <= 1) {
-    recentTemporaryFailures = [];
-    scheduleConcurrencyRestore(jobId);
+    scheduleConcurrencyRestore(jobId, channelId);
     return;
   }
-  concurrencyPenalty = Math.min(settings.maxConcurrentUploads - 1, concurrencyPenalty + 1);
-  const reduced = Math.max(1, settings.maxConcurrentUploads - concurrencyPenalty);
-  recentTemporaryFailures = [];
-  await log(jobId, "warn", `Concorrência reduzida automaticamente de ${previous} para ${reduced} após erros temporários.`).catch(() => undefined);
-  scheduleConcurrencyRestore(jobId);
+  state.penalty = Math.min(settings.maxConcurrentUploads - 1, state.penalty + 1);
+  const reduced = Math.max(1, settings.maxConcurrentUploads - state.penalty);
+  await log(jobId, "warn", `Concorrência deste canal reduzida automaticamente de ${previous} para ${reduced} após erros temporários. Os outros canais não foram afetados.`).catch(() => undefined);
+  scheduleConcurrencyRestore(jobId, channelId);
 }
 
 async function withSourceLock<T>(key: string, operation: () => Promise<T>) {
@@ -227,21 +272,31 @@ async function withSourceLock<T>(key: string, operation: () => Promise<T>) {
   }
 }
 
-function isQuotaError(error: unknown) {
+function googleErrorText(error: unknown) {
   const candidate = error as {
-    code?: number;
+    code?: number | string;
     message?: string;
     response?: { status?: number; data?: unknown };
   };
-  const status = candidate?.response?.status ?? candidate?.code;
   let details = "";
   try {
     details = JSON.stringify(candidate?.response?.data ?? "");
   } catch {
     details = "";
   }
-  const text = `${candidate?.message ?? ""} ${details}`;
-  return status === 429 || /quotaExceeded|dailyLimitExceeded|uploadLimitExceeded|rateLimitExceeded/i.test(text);
+  return `${candidate?.message ?? ""} ${details}`;
+}
+
+function isChannelDailyLimitError(error: unknown) {
+  return /uploadLimitExceeded/i.test(googleErrorText(error));
+}
+
+function isProjectDailyQuotaError(error: unknown) {
+  return /quotaExceeded|dailyLimitExceeded|dailyLimitExceededUnreg|variableTermExpiredDailyExceeded/i.test(googleErrorText(error));
+}
+
+function isDailyQuotaError(error: unknown) {
+  return isChannelDailyLimitError(error) || isProjectDailyQuotaError(error);
 }
 
 function isAuthorizationError(error: unknown) {
@@ -278,6 +333,57 @@ async function log(jobId: string, level: string, message: string, metadata?: unk
       message,
       metadata: metadata ? JSON.stringify(metadata) : undefined,
     },
+  });
+}
+
+async function pauseChannelForDailyLimit(channelId: string, triggerJobId: string, reason: string) {
+  const now = new Date();
+  const channel = await prisma.youtubeChannel.findUnique({
+    where: { id: channelId },
+    select: { quotaBlockedUntil: true },
+  });
+  const blockedUntil = channel?.quotaBlockedUntil && channel.quotaBlockedUntil > now
+    ? channel.quotaBlockedUntil
+    : new Date(now.getTime() + CHANNEL_DAILY_COOLDOWN_MS);
+  const message = `Limite diário de uploads deste canal atingido. Retomada automática em ${blockedUntil.toLocaleString("pt-BR")}.`;
+
+  await prisma.youtubeChannel.update({
+    where: { id: channelId },
+    data: { quotaBlockedUntil: blockedUntil, quotaBlockReason: reason.slice(0, 500) },
+  });
+  const affectedJobs = await prisma.uploadJob.findMany({
+    where: {
+      channelId,
+      status: { in: [JobStatus.RUNNING, JobStatus.PENDING, JobStatus.QUOTA_REACHED] },
+    },
+    select: { id: true },
+  });
+  const jobIds = affectedJobs.map((job) => job.id);
+  if (jobIds.length) {
+    await prisma.$transaction([
+      prisma.uploadJob.updateMany({
+        where: { id: { in: jobIds } },
+        data: { status: JobStatus.QUOTA_REACHED, errorMessage: message, completedAt: null, nextRetryAt: blockedUntil },
+      }),
+      prisma.uploadItem.updateMany({
+        where: { jobId: { in: jobIds }, status: ItemStatus.UPLOADING },
+        data: { status: ItemStatus.PENDING, errorMessage: null },
+      }),
+    ]);
+  }
+  const delay = Math.max(1000, blockedUntil.getTime() - Date.now());
+  for (const jobId of jobIds) scheduleUploadJob(jobId, delay);
+  await log(triggerJobId, "quota", `${message} Outros canais continuam normalmente.`, {
+    channelId,
+    blockedUntil: blockedUntil.toISOString(),
+  }).catch(() => undefined);
+  return { blockedUntil, delay, message };
+}
+
+async function clearExpiredChannelQuota(channelId: string) {
+  await prisma.youtubeChannel.updateMany({
+    where: { id: channelId, quotaBlockedUntil: { lte: new Date() } },
+    data: { quotaBlockedUntil: null, quotaBlockReason: null },
   });
 }
 
@@ -605,7 +711,7 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
             }
           },
           onRetry: (attempt, delayMs, reason) => {
-            void recordTemporaryFailure(job.id).catch(() => undefined);
+            void recordTemporaryFailure(job.id, job.channelId).catch(() => undefined);
             void log(
               job.id,
               "warn",
@@ -673,6 +779,15 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
     );
   } catch (error) {
     if (slotReserved) await releaseUploadSlot(job.channelId).catch(() => undefined);
+    if (isChannelDailyLimitError(error)) {
+      const message = friendlyGoogleError(error);
+      await prisma.uploadItem.update({
+        where: { id: item.id },
+        data: { status: ItemStatus.PENDING, errorMessage: null },
+      }).catch(() => undefined);
+      await pauseChannelForDailyLimit(job.channelId, job.id, message);
+      return;
+    }
     const status = await currentJobStatus(job.id);
 
     if (status === JobStatus.PAUSED) {
@@ -700,8 +815,8 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
       await log(job.id, "info", `Upload de ${item.title} cancelado.`);
     } else {
       const message = friendlyGoogleError(error);
-      const quota = isQuotaError(error);
-      const needsReconnect = !quota && isAuthorizationError(error);
+      const dailyQuota = isDailyQuotaError(error);
+      const needsReconnect = !dailyQuota && isAuthorizationError(error);
       const permanent = /arquivo .*não existe|formato de vídeo não suportado|tamanho do vídeo é inválido|vídeo é maior|playlist selecionada não existe/i.test(message);
 
       if (permanent) {
@@ -726,10 +841,10 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
         ]);
         await log(job.id, "warn", `${item.title}: ${message}`);
       } else {
-        if (!quota) await recordTemporaryFailure(job.id);
-        const delay = await automaticRetryDelay(job.id, quota);
-        const retryMessage = quota
-          ? `Quota do YouTube temporariamente indisponível. Nova tentativa automática em ${Math.ceil(delay / 60_000)} minuto(s).`
+        if (!dailyQuota) await recordTemporaryFailure(job.id, job.channelId);
+        const delay = await automaticRetryDelay(job.id, dailyQuota);
+        const retryMessage = dailyQuota
+          ? "Quota diária do projeto YouTube atingida. Nova tentativa automática em 24 horas."
           : `${message} Nova tentativa automática em ${Math.ceil(delay / 1000)} segundo(s).`;
         await prisma.$transaction([
           prisma.uploadItem.update({
@@ -739,7 +854,7 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
           prisma.uploadJob.update({
             where: { id: job.id },
             data: {
-              status: JobStatus.PENDING,
+              status: dailyQuota ? JobStatus.QUOTA_REACHED : JobStatus.PENDING,
               errorMessage: retryMessage,
               completedAt: null,
             },
@@ -755,11 +870,11 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
 
 async function processUploadItem(job: JobContext, playlist: Playlist, item: UploadItem) {
   const key = `${job.driveAccountId}:${job.channelId}:${item.driveFileId}`;
-  await acquireUploadSlot(item.id, job.id);
+  await acquireUploadSlot(item.id, job.id, job.channelId);
   try {
     return await withSourceLock(key, () => processUploadItemUnlocked(job, playlist, item));
   } finally {
-    releaseUploadConcurrencySlot(item.id);
+    releaseUploadConcurrencySlot(item.id, job.channelId);
   }
 }
 
@@ -787,11 +902,9 @@ export async function recoverPendingUploadJobs() {
   const now = Date.now();
   if (now - lastRecoveryScan < 5000) return;
   lastRecoveryScan = now;
-  const limit = positiveInt("MAX_PARALLEL_UPLOAD_JOBS", DEFAULT_PARALLEL_UPLOAD_JOBS, 10);
   const jobs = await prisma.uploadJob.findMany({
     where: { status: { in: [JobStatus.RUNNING, JobStatus.PENDING, JobStatus.QUOTA_REACHED] } },
     orderBy: { updatedAt: "asc" },
-    take: limit,
     select: { id: true },
   });
   for (const job of jobs) {
@@ -802,11 +915,6 @@ export async function recoverPendingUploadJobs() {
 export async function runUploadJob(jobId: string) {
   if (await backgroundWorkerIsHealthy()) return;
   if (workers.has(jobId)) return;
-  const processLimit = positiveInt("MAX_PARALLEL_UPLOAD_JOBS", DEFAULT_PARALLEL_UPLOAD_JOBS, 10);
-  if (workers.size >= processLimit) {
-    await log(jobId, "info", "Tarefa aguardando uma vaga segura de processamento.").catch(() => undefined);
-    return;
-  }
   const leaseAcquired = await acquireJobLease(jobId).catch(() => false);
   if (!leaseAcquired) return;
 
@@ -820,6 +928,25 @@ export async function runUploadJob(jobId: string) {
       where: { id: jobId },
       include: { driveAccount: true, channel: true },
     });
+    if (availability.nextRetryAt && availability.nextRetryAt > new Date()) {
+      scheduleUploadJob(jobId, Math.max(1000, availability.nextRetryAt.getTime() - Date.now()));
+      return;
+    }
+    if (availability.channel.quotaBlockedUntil && availability.channel.quotaBlockedUntil > new Date()) {
+      const delay = Math.max(1000, availability.channel.quotaBlockedUntil.getTime() - Date.now());
+      await prisma.uploadJob.update({
+        where: { id: jobId },
+        data: {
+          status: JobStatus.QUOTA_REACHED,
+          errorMessage: `Este canal está aguardando o limite diário. Retomada automática em ${availability.channel.quotaBlockedUntil.toLocaleString("pt-BR")}.`,
+          completedAt: null,
+        },
+      });
+      scheduleUploadJob(jobId, delay);
+      return;
+    }
+    await clearExpiredChannelQuota(availability.channelId);
+
     if (!availability.driveAccount.isActive || !availability.channel.isActive) {
       await prisma.uploadJob.update({
         where: { id: jobId },
@@ -840,6 +967,7 @@ export async function runUploadJob(jobId: string) {
         status: JobStatus.RUNNING,
         startedAt: availability.startedAt ?? new Date(),
         completedAt: null,
+        nextRetryAt: null,
         errorMessage: null,
       },
       include: { driveAccount: true, channel: true },
@@ -881,6 +1009,7 @@ export async function runUploadJob(jobId: string) {
         status: finalStatus,
         progress: pending || errors ? undefined : 100,
         completedAt: pending ? null : new Date(),
+        nextRetryAt: null,
         errorMessage: errors ? `${errors} aula(s) com erro permanente. É possível reenviá-las.` : null,
       },
     });
@@ -891,8 +1020,16 @@ export async function runUploadJob(jobId: string) {
     }
   } catch (error) {
     const message = friendlyGoogleError(error);
-    const quota = isQuotaError(error);
-    const needsReconnect = !quota && isAuthorizationError(error);
+    if (isChannelDailyLimitError(error)) {
+      const failedJob = await prisma.uploadJob.findUnique({
+        where: { id: jobId },
+        select: { channelId: true },
+      }).catch(() => null);
+      if (failedJob) await pauseChannelForDailyLimit(failedJob.channelId, jobId, message);
+      return;
+    }
+    const dailyQuota = isProjectDailyQuotaError(error);
+    const needsReconnect = !dailyQuota && isAuthorizationError(error);
 
     if (needsReconnect) {
       await prisma.uploadJob.update({
@@ -901,13 +1038,15 @@ export async function runUploadJob(jobId: string) {
       }).catch(() => undefined);
       await log(jobId, "warn", message).catch(() => undefined);
     } else {
-      if (!quota) await recordTemporaryFailure(jobId);
-      const delay = await automaticRetryDelay(jobId, quota).catch(() => 60_000);
+      if (!dailyQuota) await recordTemporaryFailure(jobId);
+      const delay = await automaticRetryDelay(jobId, dailyQuota).catch(() => dailyQuota ? CHANNEL_DAILY_COOLDOWN_MS : 60_000);
       await prisma.uploadJob.update({
         where: { id: jobId },
         data: {
-          status: JobStatus.PENDING,
-          errorMessage: `${message} Retomada automática agendada.`,
+          status: dailyQuota ? JobStatus.QUOTA_REACHED : JobStatus.PENDING,
+          errorMessage: dailyQuota
+            ? "Quota diária do projeto YouTube atingida. Nova tentativa automática em 24 horas. Este limite oficial pode afetar todos os canais deste projeto Google Cloud."
+            : `${message} Retomada automática agendada.`,
           completedAt: null,
         },
       }).catch(() => undefined);
@@ -917,13 +1056,6 @@ export async function runUploadJob(jobId: string) {
     clearInterval(leaseHeartbeat);
     workers.delete(jobId);
     await releaseJobLease(jobId).catch(() => undefined);
-    const limit = positiveInt("MAX_PARALLEL_UPLOAD_JOBS", DEFAULT_PARALLEL_UPLOAD_JOBS, 10);
-    if (workers.size < limit) {
-      const next = await prisma.uploadJob.findFirst({
-        where: { status: JobStatus.PENDING, id: { not: jobId } },
-        orderBy: { createdAt: "asc" },
-      }).catch(() => null);
-      if (next) queueMicrotask(() => void runUploadJob(next.id));
-    }
+    queueMicrotask(() => void recoverPendingUploadJobs());
   }
 }
