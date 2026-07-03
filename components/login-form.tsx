@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Eye, EyeOff, LoaderCircle, LockKeyhole, Mail } from "lucide-react";
 
 export function LoginForm() {
@@ -85,7 +86,7 @@ export function LoginForm() {
       <div>
         <div className="mb-2 flex items-center justify-between">
           <label className="text-sm font-semibold text-slate-700" htmlFor="password">Senha</label>
-          <span className="text-xs font-bold text-brand-600">Acesso seguro</span>
+          <Link href="/recuperar-senha" className="text-xs font-bold text-brand-600 transition hover:text-brand-700 hover:underline">Redefinir senha</Link>
         </div>
         <div className="relative">
           <LockKeyhole className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
