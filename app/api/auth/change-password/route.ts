@@ -39,13 +39,13 @@ export async function POST(request: Request) {
     const passwordHash = await bcrypt.hash(body.newPassword, 12);
     await prisma.$transaction(async (tx) => {
       await tx.user.update({ where: { id: user.id }, data: { passwordHash } });
-      await tx.$executeRaw`
-        UPDATE "UserAccess"
-        SET "mustChangePassword" = 0,
-            "sessionVersion" = "sessionVersion" + 1,
-            "updatedAt" = CURRENT_TIMESTAMP
-        WHERE "userId" = ${user.id}
-      `;
+      await tx.userAccess.update({
+        where: { userId: user.id },
+        data: {
+          mustChangePassword: false,
+          sessionVersion: { increment: 1 },
+        },
+      });
     });
 
     const freshAccess = await getUserAccess(user.id);
