@@ -76,9 +76,10 @@ model YoutubeChannel {
   isActive           Boolean     @default(true)
   dailyUploadCount  Int         @default(0)
   dailyCounterDate  String?
-  quotaBlockedUntil DateTime?
-  quotaBlockReason  String?
-  connectedAt       DateTime    @default(now())
+  quotaBlockedUntil        DateTime?
+  quotaBlockReason         String?
+  adaptiveConcurrencyLimit Int?
+  connectedAt              DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
   uploadJobs         UploadJob[]
   playlists          Playlist[]

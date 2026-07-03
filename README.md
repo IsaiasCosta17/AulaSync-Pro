@@ -15,6 +15,7 @@ O AulaSync Pro conecta contas Google Drive a canais YouTube, organiza cursos por
 - Upload resumable em blocos, retomando do byte confirmado pelo YouTube.
 - Concorrência configurável de 1 a 10 uploads por canal, padrão 3.
 - Quantidade ilimitada de contas e canais conectados, com filas independentes entre canais.
+- Proteção compartilhada por conta Drive: no máximo 3 leituras simultâneas por padrão, evitando que vários canais sobrecarreguem a mesma origem.
 - Redução automática da concorrência após erros temporários e restauração gradual.
 - Nova tentativa automática com backoff para erros 408, 429, 5xx e falhas de rede.
 - Limite diário de upload do canal: somente esse canal pausa por 24 horas e depois retoma automaticamente.
@@ -78,6 +79,7 @@ Use a URI PostgreSQL fornecida pelo Supabase em `DATABASE_URL`. A variável deve
 | GOOGLE_CLIENT_SECRET | Segredo OAuth do Google |
 | GOOGLE_REDIRECT_URI_DRIVE | Callback do Drive |
 | GOOGLE_REDIRECT_URI_YOUTUBE | Callback do YouTube |
+| MAX_CONCURRENT_DRIVE_STREAMS_PER_ACCOUNT | Leituras simultâneas por conta Drive; padrão seguro 3 |
 | UPLOAD_CHUNK_SIZE_MB | Tamanho dos blocos do resumable; padrão 8 MB |
 | UPLOAD_MAX_RETRIES | Tentativas por bloco; padrão 8 |
 | UPLOAD_REQUEST_TIMEOUT_MS | Timeout de cada solicitação; padrão 120000 ms |
@@ -113,7 +115,7 @@ Alterações são salvas no banco e aplicadas às operações seguintes. O valor
 
 Nenhuma quantidade máxima de aulas é aplicada à tarefa. A concorrência define apenas quantas aulas são transmitidas ao mesmo tempo.
 
-Cada canal possui sua própria fila, concorrência adaptativa e estado de quota. Uma redução de velocidade ou limite diário em um canal não ocupa nem reduz as vagas dos demais canais.
+Cada canal possui sua própria fila, concorrência adaptativa e estado de quota. Uma redução de velocidade ou limite diário em um canal não reduz a concorrência dos demais canais. Quando vários canais usam a mesma conta Drive, o motor compartilha até 3 leituras simultâneas dessa origem para evitar respostas 429 do Google. A concorrência só volta a subir depois de uploads bem-sucedidos.
 
 ## Retomada e prevenção de duplicados
 
