@@ -24,11 +24,14 @@ const workers = new Set<string>();
 const sourceLocks = new Map<string, Promise<void>>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const activeUploadItemsByChannel = new Map<string, Set<string>>();
-const uploadSlotWaitersByChannel = new Map<string, Array<() => void>>();
+const activeUploadItemsByDriveAccount = new Map<string, Set<string>>();
+const uploadSlotWaiters: Array<() => void> = [];
 const concurrencyStateByChannel = new Map<string, {
   penalty: number;
   recentTemporaryFailures: number[];
   restoreTimer: ReturnType<typeof setTimeout> | null;
+  lastSuccessfulUploadAt: number;
+  hydrated: boolean;
 }>();
 let lastRecoveryScan = 0;
 const workerOwnerId = randomUUID();
@@ -119,11 +122,24 @@ async function settingsForJob(jobId: string, fresh = false) {
 async function automaticRetryDelay(jobId: string, dailyQuota = false) {
   const settings = await settingsForJob(jobId);
   if (dailyQuota) return CHANNEL_DAILY_COOLDOWN_MS;
-  const attempts = await prisma.log.count({ where: { jobId, level: "retry" } });
-  return Math.min(
+  const attempts = await prisma.log.count({
+    where: {
+      jobId,
+      level: "retry",
+      createdAt: { gte: new Date(Date.now() - 60 * 60_000) },
+    },
+  });
+  const baseDelay = Math.min(
     15 * 60_000,
     settings.temporaryRetrySeconds * 1000 * 2 ** Math.min(attempts, 6),
   );
+  const jitter = Math.floor(Math.random() * Math.min(60_000, Math.max(1000, baseDelay / 5)));
+  return baseDelay + jitter;
+}
+
+function formatRetryDelay(delayMs: number) {
+  if (delayMs >= 60_000) return `${Math.ceil(delayMs / 60_000)} minuto(s)`;
+  return `${Math.ceil(delayMs / 1000)} segundo(s)`;
 }
 
 async function armAutomaticRetry(
@@ -140,7 +156,7 @@ async function armAutomaticRetry(
   await log(
     jobId,
     "retry",
-    `${itemTitle}: retomada automática em ${Math.ceil(delayMs / 1000)} segundos.`,
+    `${itemTitle}: retomada automática em ${formatRetryDelay(delayMs)}.`,
     { delayMs, message, nextRetryAt: nextRetryAt.toISOString() },
   ).catch(() => undefined);
   scheduleUploadJob(jobId, delayMs);
@@ -153,6 +169,8 @@ function concurrencyState(channelId: string) {
     penalty: 0,
     recentTemporaryFailures: [] as number[],
     restoreTimer: null as ReturnType<typeof setTimeout> | null,
+    lastSuccessfulUploadAt: 0,
+    hydrated: false,
   };
   concurrencyStateByChannel.set(channelId, created);
   return created;
@@ -166,67 +184,126 @@ function activeItemsForChannel(channelId: string) {
   return created;
 }
 
+function activeItemsForDriveAccount(driveAccountId: string) {
+  const existing = activeUploadItemsByDriveAccount.get(driveAccountId);
+  if (existing) return existing;
+  const created = new Set<string>();
+  activeUploadItemsByDriveAccount.set(driveAccountId, created);
+  return created;
+}
+
+function wakeUploadWaiters() {
+  for (const wake of uploadSlotWaiters.splice(0)) wake();
+}
+
+async function persistConcurrencyLimit(channelId: string, limit: number | null) {
+  await prisma.youtubeChannel.updateMany({
+    where: { id: channelId },
+    data: { adaptiveConcurrencyLimit: limit },
+  }).catch(() => undefined);
+}
+
 async function effectiveConcurrency(jobId: string, channelId: string) {
   const settings = await settingsForJob(jobId);
   const state = concurrencyState(channelId);
-  if (!settings.adaptiveConcurrencyEnabled) state.penalty = 0;
+
+  if (!settings.adaptiveConcurrencyEnabled) {
+    state.penalty = 0;
+    state.hydrated = true;
+    await persistConcurrencyLimit(channelId, null);
+    return { settings, limit: settings.maxConcurrentUploads };
+  }
+
+  if (!state.hydrated) {
+    const [channel, recentRetries] = await Promise.all([
+      prisma.youtubeChannel.findUnique({
+        where: { id: channelId },
+        select: { adaptiveConcurrencyLimit: true },
+      }),
+      prisma.log.count({
+        where: {
+          jobId,
+          level: "retry",
+          createdAt: { gte: new Date(Date.now() - 60 * 60_000) },
+        },
+      }),
+    ]);
+    const safeLimit = channel?.adaptiveConcurrencyLimit
+      ?? (recentRetries > 0 ? 1 : settings.maxConcurrentUploads);
+    state.penalty = Math.max(0, settings.maxConcurrentUploads - Math.max(1, Math.min(settings.maxConcurrentUploads, safeLimit)));
+    state.hydrated = true;
+    if (channel?.adaptiveConcurrencyLimit == null && recentRetries > 0) {
+      await persistConcurrencyLimit(channelId, 1);
+    }
+  }
+
   return {
     settings,
     limit: Math.max(1, settings.maxConcurrentUploads - state.penalty),
   };
 }
 
-function wakeUploadWaiters(channelId: string) {
-  const waiters = uploadSlotWaitersByChannel.get(channelId) ?? [];
-  uploadSlotWaitersByChannel.delete(channelId);
-  for (const wake of waiters) wake();
+function driveConcurrencyLimit() {
+  return positiveInt("MAX_CONCURRENT_DRIVE_STREAMS_PER_ACCOUNT", 3, 10);
 }
 
-async function acquireUploadSlot(itemId: string, jobId: string, channelId: string) {
+async function acquireUploadSlot(
+  itemId: string,
+  jobId: string,
+  channelId: string,
+  driveAccountId: string,
+) {
   while (true) {
     const { limit } = await effectiveConcurrency(jobId, channelId);
-    const activeItems = activeItemsForChannel(channelId);
-    if (activeItems.size < limit) {
-      activeItems.add(itemId);
+    const activeChannelItems = activeItemsForChannel(channelId);
+    const activeDriveItems = activeItemsForDriveAccount(driveAccountId);
+    if (activeChannelItems.size < limit && activeDriveItems.size < driveConcurrencyLimit()) {
+      activeChannelItems.add(itemId);
+      activeDriveItems.add(itemId);
       return;
     }
-    await new Promise<void>((resolve) => {
-      const waiters = uploadSlotWaitersByChannel.get(channelId) ?? [];
-      waiters.push(resolve);
-      uploadSlotWaitersByChannel.set(channelId, waiters);
-    });
+    await new Promise<void>((resolve) => uploadSlotWaiters.push(resolve));
   }
 }
 
-function releaseUploadConcurrencySlot(itemId: string, channelId: string) {
-  const activeItems = activeUploadItemsByChannel.get(channelId);
-  activeItems?.delete(itemId);
-  if (activeItems?.size === 0) activeUploadItemsByChannel.delete(channelId);
-  wakeUploadWaiters(channelId);
+function releaseUploadConcurrencySlot(itemId: string, channelId: string, driveAccountId: string) {
+  const activeChannelItems = activeUploadItemsByChannel.get(channelId);
+  activeChannelItems?.delete(itemId);
+  if (activeChannelItems?.size === 0) activeUploadItemsByChannel.delete(channelId);
+
+  const activeDriveItems = activeUploadItemsByDriveAccount.get(driveAccountId);
+  activeDriveItems?.delete(itemId);
+  if (activeDriveItems?.size === 0) activeUploadItemsByDriveAccount.delete(driveAccountId);
+  wakeUploadWaiters();
 }
 
 function scheduleConcurrencyRestore(jobId: string, channelId: string) {
   const state = concurrencyState(channelId);
-  if (state.restoreTimer) clearTimeout(state.restoreTimer);
+  if (state.restoreTimer || state.penalty <= 0 || !state.lastSuccessfulUploadAt) return;
   state.restoreTimer = setTimeout(() => {
     void (async () => {
       const settings = await settingsForJob(jobId, true);
       const current = concurrencyState(channelId);
-      if (!settings.adaptiveConcurrencyEnabled || current.penalty <= 0) {
-        current.penalty = 0;
-        current.restoreTimer = null;
-        wakeUploadWaiters(channelId);
-        return;
-      }
+      current.restoreTimer = null;
+      const successIsRecent = Date.now() - current.lastSuccessfulUploadAt < 10 * 60_000;
+      if (!settings.adaptiveConcurrencyEnabled || current.penalty <= 0 || !successIsRecent) return;
+
       const previous = Math.max(1, settings.maxConcurrentUploads - current.penalty);
       current.penalty -= 1;
       const restored = Math.max(1, settings.maxConcurrentUploads - current.penalty);
-      current.restoreTimer = null;
-      await log(jobId, "info", `Concorrência do canal restaurada gradualmente de ${previous} para ${restored}.`).catch(() => undefined);
-      wakeUploadWaiters(channelId);
+      await persistConcurrencyLimit(channelId, current.penalty > 0 ? restored : null);
+      await log(jobId, "info", `Concorrência do canal restaurada gradualmente de ${previous} para ${restored} após uploads estáveis.`).catch(() => undefined);
+      wakeUploadWaiters();
       if (current.penalty > 0) scheduleConcurrencyRestore(jobId, channelId);
     })();
   }, 3 * 60_000);
+}
+
+async function recordSuccessfulUpload(jobId: string, channelId: string) {
+  const state = concurrencyState(channelId);
+  state.lastSuccessfulUploadAt = Date.now();
+  state.recentTemporaryFailures = [];
+  scheduleConcurrencyRestore(jobId, channelId);
 }
 
 async function recordTemporaryFailure(jobId: string, knownChannelId?: string) {
@@ -239,6 +316,12 @@ async function recordTemporaryFailure(jobId: string, knownChannelId?: string) {
   if (!channelId) return;
 
   const state = concurrencyState(channelId);
+  state.hydrated = true;
+  state.lastSuccessfulUploadAt = 0;
+  if (state.restoreTimer) {
+    clearTimeout(state.restoreTimer);
+    state.restoreTimer = null;
+  }
   const now = Date.now();
   state.recentTemporaryFailures = state.recentTemporaryFailures.filter((time) => now - time < 2 * 60_000);
   state.recentTemporaryFailures.push(now);
@@ -247,13 +330,14 @@ async function recordTemporaryFailure(jobId: string, knownChannelId?: string) {
   const previous = Math.max(1, settings.maxConcurrentUploads - state.penalty);
   state.recentTemporaryFailures = [];
   if (previous <= 1) {
-    scheduleConcurrencyRestore(jobId, channelId);
+    await persistConcurrencyLimit(channelId, 1);
     return;
   }
   state.penalty = Math.min(settings.maxConcurrentUploads - 1, state.penalty + 1);
   const reduced = Math.max(1, settings.maxConcurrentUploads - state.penalty);
+  await persistConcurrencyLimit(channelId, reduced);
   await log(jobId, "warn", `Concorrência deste canal reduzida automaticamente de ${previous} para ${reduced} após erros temporários. Os outros canais não foram afetados.`).catch(() => undefined);
-  scheduleConcurrencyRestore(jobId, channelId);
+  wakeUploadWaiters();
 }
 
 async function withSourceLock<T>(key: string, operation: () => Promise<T>) {
@@ -769,6 +853,7 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
         errorMessage: null,
       },
     });
+    await recordSuccessfulUpload(job.id, job.channelId);
     await log(
       job.id,
       "success",
@@ -845,7 +930,7 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
         const delay = await automaticRetryDelay(job.id, dailyQuota);
         const retryMessage = dailyQuota
           ? "Quota diária do projeto YouTube atingida. Nova tentativa automática em 24 horas."
-          : `${message} Nova tentativa automática em ${Math.ceil(delay / 1000)} segundo(s).`;
+          : `${message} Nova tentativa automática em ${formatRetryDelay(delay)}.`;
         await prisma.$transaction([
           prisma.uploadItem.update({
             where: { id: item.id },
@@ -870,11 +955,11 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
 
 async function processUploadItem(job: JobContext, playlist: Playlist, item: UploadItem) {
   const key = `${job.driveAccountId}:${job.channelId}:${item.driveFileId}`;
-  await acquireUploadSlot(item.id, job.id, job.channelId);
+  await acquireUploadSlot(item.id, job.id, job.channelId, job.driveAccountId);
   try {
     return await withSourceLock(key, () => processUploadItemUnlocked(job, playlist, item));
   } finally {
-    releaseUploadConcurrencySlot(item.id, job.channelId);
+    releaseUploadConcurrencySlot(item.id, job.channelId, job.driveAccountId);
   }
 }
 
