@@ -13,10 +13,12 @@ O AulaSync Pro conecta contas Google Drive a canais YouTube, organiza cursos por
 - Playlist nova ou playlist já existente no canal.
 - Privacidade pública, privada ou não listada.
 - Upload resumable em blocos, retomando do byte confirmado pelo YouTube.
-- Concorrência configurável de 1 a 10 uploads, padrão 3.
+- Concorrência configurável de 1 a 10 uploads por canal, padrão 3.
+- Quantidade ilimitada de contas e canais conectados, com filas independentes entre canais.
 - Redução automática da concorrência após erros temporários e restauração gradual.
 - Nova tentativa automática com backoff para erros 408, 429, 5xx e falhas de rede.
-- Quota oficial: nova tentativa automática a cada 60 minutos por padrão.
+- Limite diário de upload do canal: somente esse canal pausa por 24 horas e depois retoma automaticamente.
+- Quota diária do projeto Google Cloud: pausa por 24 horas; por ser uma quota oficial compartilhada do projeto, pode afetar todos os canais que usam o mesmo cliente OAuth.
 - Recuperação de tarefas pendentes depois que o aplicativo reinicia.
 - Verificação de arquivo, formato, tamanho, conta, canal, playlist e duplicidade antes do envio.
 - Pausar, continuar, cancelar e reenviar apenas aulas com erro.
@@ -76,13 +78,12 @@ Use a URI PostgreSQL fornecida pelo Supabase em `DATABASE_URL`. A variável deve
 | GOOGLE_CLIENT_SECRET | Segredo OAuth do Google |
 | GOOGLE_REDIRECT_URI_DRIVE | Callback do Drive |
 | GOOGLE_REDIRECT_URI_YOUTUBE | Callback do YouTube |
-| MAX_PARALLEL_UPLOAD_JOBS | Máximo de tarefas processadas ao mesmo tempo |
 | UPLOAD_CHUNK_SIZE_MB | Tamanho dos blocos do resumable; padrão 8 MB |
 | UPLOAD_MAX_RETRIES | Tentativas por bloco; padrão 8 |
 | UPLOAD_REQUEST_TIMEOUT_MS | Timeout de cada solicitação; padrão 120000 ms |
 | NEXT_PUBLIC_APP_URL | URL pública do sistema |
 
-A concorrência das aulas e os tempos de nova tentativa agora são definidos em Configurações, não no .env.
+A concorrência das aulas e os tempos de nova tentativa são definidos em Configurações, não no .env. Não existe teto global de contas ou canais em processamento.
 
 Nunca publique o arquivo .env nem troque TOKEN_ENCRYPTION_KEY depois de conectar contas, pois os tokens existentes dependem dessa chave.
 
@@ -92,7 +93,7 @@ Em /settings o administrador pode definir:
 
 - uploads simultâneos entre 1 e 10;
 - espera para erros temporários;
-- espera por quota;
+- retomada automática após 24 horas quando o YouTube informar limite diário;
 - privacidade, descrição e tags padrão;
 - ID opcional de uma miniatura JPG ou PNG no Drive, até 2 MB;
 - verificação de duplicados;
@@ -111,6 +112,8 @@ Alterações são salvas no banco e aplicadas às operações seguintes. O valor
 7. Acompanhe em Uploads ou abra Detalhes para ver cada aula e os logs.
 
 Nenhuma quantidade máxima de aulas é aplicada à tarefa. A concorrência define apenas quantas aulas são transmitidas ao mesmo tempo.
+
+Cada canal possui sua própria fila, concorrência adaptativa e estado de quota. Uma redução de velocidade ou limite diário em um canal não ocupa nem reduz as vagas dos demais canais.
 
 ## Retomada e prevenção de duplicados
 

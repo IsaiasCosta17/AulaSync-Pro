@@ -42,10 +42,10 @@ export async function POST(
     }
 
     if (action === "pause") {
-      await prisma.uploadJob.update({ where: { id }, data: { status: JobStatus.PAUSED } });
+      await prisma.uploadJob.update({ where: { id }, data: { status: JobStatus.PAUSED, nextRetryAt: null } });
     } else if (action === "cancel") {
       await prisma.$transaction([
-        prisma.uploadJob.update({ where: { id }, data: { status: JobStatus.CANCELLED } }),
+        prisma.uploadJob.update({ where: { id }, data: { status: JobStatus.CANCELLED, nextRetryAt: null } }),
         prisma.uploadItem.updateMany({
           where: { jobId: id, status: { in: [ItemStatus.PENDING, ItemStatus.ERROR] } },
           data: { status: ItemStatus.CANCELLED, encryptedResumableUri: null },
@@ -60,7 +60,7 @@ export async function POST(
       }
       await prisma.uploadJob.update({
         where: { id },
-        data: { status: JobStatus.PENDING, errorMessage: null, completedAt: null },
+        data: { status: JobStatus.PENDING, errorMessage: null, completedAt: null, nextRetryAt: null },
       });
       queueMicrotask(() => void runUploadJob(id));
     }

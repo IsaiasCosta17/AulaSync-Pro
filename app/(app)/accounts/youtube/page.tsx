@@ -48,7 +48,7 @@ export default async function YoutubeAccountsPage({
         </div>
         <div className="panel flex items-center gap-4 p-4">
           <div className="grid size-11 place-items-center rounded-xl bg-orange-50 text-orange-600"><Gauge className="size-5" /></div>
-          <div><div className="text-sm font-extrabold text-slate-800">Sem limite interno</div><div className="text-xs text-slate-400">respeita somente a quota do YouTube</div></div>
+          <div><div className="text-sm font-extrabold text-slate-800">Canais ilimitados</div><div className="text-xs text-slate-400">filas independentes por canal</div></div>
         </div>
       </div>
 
@@ -69,6 +69,11 @@ export default async function YoutubeAccountsPage({
                 </div>
                 <DeleteAccountButton type="youtube" id={channel.id} name={channel.name} />
               </div>
+              {channel.quotaBlockedUntil && channel.quotaBlockedUntil > new Date() && (
+                <div className="mt-4 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3 text-xs font-semibold leading-5 text-orange-700">
+                  Limite diário deste canal atingido. Retomada automática em {formatDate(channel.quotaBlockedUntil)}. Os demais canais continuam enviando.
+                </div>
+              )}
               <div className="mt-5 grid grid-cols-3 gap-2 rounded-xl bg-slate-50 p-3 text-center">
                 <div><div className="text-sm font-extrabold text-slate-800">{channel._count.uploadJobs}</div><div className="text-[10px] text-slate-400">tarefas</div></div>
                 <div className="border-x border-slate-200"><div className="text-sm font-extrabold text-slate-800">{channel._count.playlists}</div><div className="text-[10px] text-slate-400">playlists</div></div>
