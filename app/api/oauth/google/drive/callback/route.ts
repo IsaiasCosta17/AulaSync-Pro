@@ -7,6 +7,7 @@ import { verifyOAuthState } from "@/lib/auth";
 import { createOAuthClient } from "@/lib/google";
 import { cleanErrorMessage } from "@/lib/utils";
 import { requireUserSession } from "@/lib/tenant";
+import { publicAppUrl } from "@/lib/public-url";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -61,9 +62,9 @@ export async function GET(request: Request) {
     } else {
       await prisma.googleDriveAccount.create({ data: data as never });
     }
-    return NextResponse.redirect(new URL("/accounts/drive?connected=1", request.url));
+    return NextResponse.redirect(publicAppUrl("/accounts/drive?connected=1"));
   } catch (error) {
     const message = error instanceof Error ? cleanErrorMessage(error.message) : "Falha ao conectar o Drive.";
-    return NextResponse.redirect(new URL(`/accounts/drive?error=${encodeURIComponent(message)}`, request.url));
+    return NextResponse.redirect(publicAppUrl(`/accounts/drive?error=${encodeURIComponent(message)}`));
   }
 }
