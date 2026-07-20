@@ -14,6 +14,9 @@ type Channel = { id: string; name: string; email: string; avatarUrl: string | nu
 type ExistingPlaylist = { id: string; name: string; privacyStatus: string; itemCount: number };
 type Video = {
   id: string;
+  sourceType?: "drive" | "local";
+  localPath?: string | null;
+  driveResourceKey?: string | null;
   name: string;
   title: string;
   mimeType: string;
@@ -61,6 +64,15 @@ export function NewUploadForm({
     if (!saved) return;
     try {
       const parsed = JSON.parse(saved);
+      if (parsed.folder?.id?.startsWith?.("local:") && Array.isArray(parsed.videos)) {
+        setAccountId("");
+        setFolderId(parsed.folder.id);
+        setCourse({ folder: parsed.folder, videos: parsed.videos });
+        setPlaylistName(parsed.folder.name);
+        setTitles(Object.fromEntries(parsed.videos.map((video: Video) => [video.id, video.title])));
+        setSelected(parsed.videos.map((video: Video) => video.id));
+        return;
+      }
       if (parsed.accountId && parsed.folder?.id) {
         setAccountId(parsed.accountId);
         setFolderId(parsed.folder.id);
@@ -101,7 +113,7 @@ export function NewUploadForm({
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/drive/courses?accountId=${account}&folderId=${folder}`);
+      const response = await fetch(`/api/drive/courses?accountId=${encodeURIComponent(account)}&folderId=${encodeURIComponent(folder)}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Não foi possível carregar o curso.");
       setCourse(data);
@@ -150,6 +162,7 @@ export function NewUploadForm({
     () => course?.videos.filter((video) => selected.includes(video.id)) || [],
     [course, selected],
   );
+  const isLocalCourse = course?.folder.id.startsWith("local:") ?? false;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -161,7 +174,8 @@ export function NewUploadForm({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          driveAccountId: accountId,
+          driveAccountId: isLocalCourse ? null : accountId,
+          sourceType: isLocalCourse ? "local" : "drive",
           channelId,
           folderId: course.folder.id,
           courseName: course.folder.name,
@@ -185,23 +199,22 @@ export function NewUploadForm({
     }
   }
 
-  if (!accounts.length || !channels.length) {
+  if (!channels.length) {
     return (
       <div className="panel p-8 text-center">
         <div className="mx-auto mb-5 grid size-16 place-items-center rounded-2xl bg-amber-50 text-amber-600"><AlertCircle className="size-7" /></div>
         <h2 className="text-lg font-extrabold text-slate-800">Falta uma conexão</h2>
         <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">
-          Para criar um upload, conecte pelo menos uma conta Google Drive e um canal YouTube.
+          Para criar um upload, conecte pelo menos um canal YouTube. A origem pode ser Google Drive ou vídeos do computador.
         </p>
         <div className="mt-5 flex justify-center gap-3">
-          {!accounts.length && <Link href="/accounts/drive" className="btn-secondary">Conectar Drive</Link>}
           {!channels.length && <Link href="/accounts/youtube" className="btn-primary">Conectar YouTube</Link>}
         </div>
       </div>
     );
   }
 
-  if (!accountId || !folderId) {
+  if (!isLocalCourse && (!accountId || !folderId)) {
     return (
       <div className="panel flex min-h-[420px] flex-col items-center justify-center px-6 text-center">
         <div className="mb-5 grid size-16 place-items-center rounded-2xl bg-brand-50 text-brand-600"><FolderOpen className="size-7" /></div>

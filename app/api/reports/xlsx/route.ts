@@ -50,7 +50,7 @@ export async function GET(request: Request) {
       course: item.job.courseName,
       lesson: item.title,
       module: item.moduleName || "",
-      drive: item.job.driveAccount.email,
+      drive: item.job.driveAccount?.email || "Computador/local",
       channel: item.job.channel.name,
       playlist: item.job.playlist?.name || "",
       status: item.status,

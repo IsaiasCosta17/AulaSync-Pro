@@ -5,7 +5,12 @@ import { LoginForm } from "@/components/login-form";
 
 export const metadata = { title: "Entrar" };
 
-export default function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ expired?: string }>;
+}) {
+  const params = await searchParams;
   return (
     <main className="grid min-h-screen bg-white lg:grid-cols-[1.08fr_.92fr]">
       <section className="relative hidden overflow-hidden bg-[#101827] p-12 text-white lg:flex lg:flex-col xl:p-16">
@@ -53,6 +58,11 @@ export default function LoginPage() {
           <div className="text-xs font-extrabold uppercase tracking-[0.18em] text-brand-600">Bem-vindo de volta</div>
           <h2 className="mt-3 text-4xl font-extrabold tracking-[-0.045em] text-slate-900">Entre na sua conta</h2>
           <p className="mt-3 text-sm leading-6 text-slate-500">Use as credenciais fornecidas pelo administrador para acessar o painel.</p>
+          {params.expired === "1" && (
+            <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
+              Sua sessão expirou. Entre novamente para continuar com segurança.
+            </div>
+          )}
           <LoginForm />
           <div className="mt-10 text-center text-xs text-slate-400">
             <p>AulaSync Pro · Automação de cursos em vídeo</p>

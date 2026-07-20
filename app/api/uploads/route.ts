@@ -6,9 +6,13 @@ import { youtubeClient } from "@/lib/google";
 import { getHiddenJobIds } from "@/lib/settings";
 import { cleanErrorMessage } from "@/lib/utils";
 import { requireUserSession } from "@/lib/tenant";
+import { isSupportedVideoName, localVideoStats } from "@/lib/local-videos";
 
 const itemSchema = z.object({
   id: z.string().min(1),
+  sourceType: z.enum(["drive", "local"]).optional(),
+  localPath: z.string().min(1).max(800).nullable().optional(),
+  driveResourceKey: z.string().max(200).nullable().optional(),
   name: z.string().min(1),
   title: z.string().trim().min(1).max(100),
   mimeType: z.string().min(1),
@@ -17,7 +21,8 @@ const itemSchema = z.object({
 });
 
 const createSchema = z.object({
-  driveAccountId: z.string().min(1),
+  sourceType: z.enum(["drive", "local"]).optional(),
+  driveAccountId: z.string().min(1).nullable().optional(),
   channelId: z.string().min(1),
   folderId: z.string().min(1),
   courseName: z.string().trim().min(1).max(150),
@@ -78,11 +83,32 @@ export async function POST(request: Request) {
     if (new Set(body.videos.map((video) => video.id)).size !== body.videos.length) {
       return NextResponse.json({ error: "A lista contém aulas duplicadas." }, { status: 400 });
     }
+    const sourceType = body.sourceType || (body.videos.every((video) => video.sourceType === "local") ? "local" : "drive");
+    const usesDrive = sourceType === "drive" || body.videos.some((video) => (video.sourceType || sourceType) === "drive");
+    if (usesDrive && !body.driveAccountId) {
+      return NextResponse.json({ error: "Selecione a conta Google Drive para aulas do Drive." }, { status: 400 });
+    }
+    const localVideos = body.videos.filter((video) => (video.sourceType || sourceType) === "local");
+    if (localVideos.length) {
+      for (const video of localVideos) {
+        if (!video.localPath) return NextResponse.json({ error: `Arquivo local ausente em ${video.name}.` }, { status: 400 });
+        if (!isSupportedVideoName(video.name)) return NextResponse.json({ error: `Formato não suportado em ${video.name}.` }, { status: 400 });
+        const stats = await localVideoStats(session.userId, video.localPath).catch(() => null);
+        if (!stats?.isFile() || stats.size <= 0) {
+          return NextResponse.json({ error: `O arquivo local ${video.name} não foi importado corretamente.` }, { status: 400 });
+        }
+        if (video.size && BigInt(video.size) !== BigInt(stats.size)) {
+          return NextResponse.json({ error: `O arquivo local ${video.name} está incompleto. Importe novamente.` }, { status: 400 });
+        }
+      }
+    }
     const [driveAccount, channel] = await Promise.all([
-      prisma.googleDriveAccount.findFirst({ where: { id: body.driveAccountId, userId: session.userId, isActive: true } as never }),
+      body.driveAccountId
+        ? prisma.googleDriveAccount.findFirst({ where: { id: body.driveAccountId, userId: session.userId, isActive: true } as never })
+        : Promise.resolve(null),
       prisma.youtubeChannel.findFirst({ where: { id: body.channelId, userId: session.userId, isActive: true } as never }),
     ]);
-    if (!driveAccount || !channel) {
+    if ((usesDrive && !driveAccount) || !channel) {
       return NextResponse.json({ error: "Conta Drive ou canal YouTube não encontrado." }, { status: 404 });
     }
 
@@ -122,33 +148,38 @@ export async function POST(request: Request) {
       selectedPlaylistDbId = savedPlaylist.id;
     }
 
-    const driveFolder = await prisma.driveFolder.upsert({
-      where: {
-        driveAccountId_driveFolderId: {
-          driveAccountId: body.driveAccountId,
-          driveFolderId: body.folderId,
-        },
-      },
-      update: { name: body.courseName },
-      create: {
-        driveAccountId: body.driveAccountId,
-        driveFolderId: body.folderId,
-        name: body.courseName,
-      },
-    });
+    const driveFolder = usesDrive && body.driveAccountId
+      ? await prisma.driveFolder.upsert({
+          where: {
+            driveAccountId_driveFolderId: {
+              driveAccountId: body.driveAccountId,
+              driveFolderId: body.folderId,
+            },
+          },
+          update: { name: body.courseName },
+          create: {
+            driveAccountId: body.driveAccountId,
+            driveFolderId: body.folderId,
+            name: body.courseName,
+          },
+        })
+      : null;
 
     const job = await prisma.uploadJob.create({
       data: ({
         userId: session.userId,
         courseName: resolvedPlaylistName,
         privacyStatus: body.privacyStatus,
-        driveAccountId: body.driveAccountId,
+        driveAccountId: body.driveAccountId || null,
         channelId: body.channelId,
-        driveFolderId: driveFolder.id,
+        driveFolderId: driveFolder?.id || null,
         playlistId: selectedPlaylistDbId,
         items: {
           create: body.videos.map((video, index) => ({
             driveFileId: video.id,
+            sourceType: video.sourceType || sourceType,
+            localPath: video.localPath || null,
+            driveResourceKey: video.driveResourceKey || null,
             originalName: video.name,
             title: video.title,
             moduleName: video.moduleName || null,

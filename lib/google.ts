@@ -22,12 +22,14 @@ export const YOUTUBE_SCOPES = [
 
 export type CourseVideo = {
   id: string;
+  sourceType: "drive";
   name: string;
   title: string;
   mimeType: string;
   size: string | null;
   moduleName: string | null;
   modulePath: string;
+  driveResourceKey?: string | null;
 };
 
 type TokenOwner = { id: string; encryptedTokens: string };
@@ -99,9 +101,12 @@ export function youtubeClient(owner: TokenOwner) {
 
 export async function listDriveFolder(owner: TokenOwner, parentId = "root") {
   const drive = driveClient(owner);
+  const isSharedWithMe = parentId === "sharedWithMe";
   const response = await drive.files.list({
-    q: `'${parentId.replaceAll("'", "\\'")}' in parents and trashed = false`,
-    fields: "files(id,name,mimeType,size,modifiedTime,webViewLink)",
+    q: isSharedWithMe
+      ? "sharedWithMe = true and trashed = false"
+      : `'${parentId.replaceAll("'", "\\'")}' in parents and trashed = false`,
+    fields: "files(id,name,mimeType,size,modifiedTime,webViewLink,resourceKey)",
     orderBy: "folder,name_natural",
     pageSize: 1000,
     supportsAllDrives: true,
@@ -121,24 +126,44 @@ export async function listDriveFolder(owner: TokenOwner, parentId = "root") {
         .filter((file) => isVideo(file.name || "", file.mimeType || ""))
         .map((file) => ({
           id: file.id!,
+          sourceType: "drive" as const,
           name: file.name || "Vídeo sem nome",
           title: stripExtension(file.name || "Vídeo sem nome"),
           mimeType: file.mimeType || "application/octet-stream",
           size: file.size ?? null,
           moduleName: null,
           modulePath: "",
+          driveResourceKey: file.resourceKey ?? null,
         })),
     ),
   };
 }
 
-export async function scanCourseFolder(owner: TokenOwner, rootId: string) {
+export async function scanCourseFolder(owner: TokenOwner, rootId: string, resourceKey?: string | null) {
   const drive = driveClient(owner);
   const root = await drive.files.get({
     fileId: rootId,
-    fields: "id,name,mimeType",
+    fields: "id,name,mimeType,size,resourceKey",
     supportsAllDrives: true,
-  });
+    ...(resourceKey ? { resourceKey } : {}),
+  } as never);
+  if (root.data.mimeType && root.data.mimeType !== "application/vnd.google-apps.folder" && isVideo(root.data.name || "", root.data.mimeType || "")) {
+    const name = root.data.name || "VÃ­deo sem nome";
+    return {
+      folder: { id: root.data.id!, name: stripExtension(name) || "Curso" },
+      videos: [{
+        id: root.data.id!,
+        sourceType: "drive" as const,
+        name,
+        title: stripExtension(name),
+        mimeType: root.data.mimeType || "application/octet-stream",
+        size: root.data.size ?? null,
+        moduleName: null,
+        modulePath: "",
+        driveResourceKey: root.data.resourceKey ?? resourceKey ?? null,
+      }],
+    };
+  }
   if (root.data.mimeType !== "application/vnd.google-apps.folder") {
     throw new Error("O item selecionado não é uma pasta.");
   }
@@ -152,7 +177,7 @@ export async function scanCourseFolder(owner: TokenOwner, rootId: string) {
     do {
       const response = await drive.files.list({
         q: `'${current.id.replaceAll("'", "\\'")}' in parents and trashed = false`,
-        fields: "nextPageToken,files(id,name,mimeType,size)",
+        fields: "nextPageToken,files(id,name,mimeType,size,resourceKey)",
         pageSize: 1000,
         pageToken,
         supportsAllDrives: true,
@@ -166,12 +191,14 @@ export async function scanCourseFolder(owner: TokenOwner, rootId: string) {
           const modulePath = current.path.join(" / ");
           videos.push({
             id: file.id,
+            sourceType: "drive",
             name: file.name || "Vídeo sem nome",
             title: stripExtension(file.name || "Vídeo sem nome"),
             mimeType: file.mimeType || "application/octet-stream",
             size: file.size ?? null,
             moduleName: current.path.at(-1) ?? null,
             modulePath,
+            driveResourceKey: file.resourceKey ?? null,
           });
         }
       }
@@ -192,6 +219,28 @@ export async function scanCourseFolder(owner: TokenOwner, rootId: string) {
       .sort(([a], [b]) => a.localeCompare(b, "pt-BR", { numeric: true }))
       .flatMap(([, items]) => naturalLessonSort(items)),
   };
+}
+
+export function parseDriveLink(input: string) {
+  const value = input.trim();
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    const resourceKey = url.searchParams.get("resourcekey") || url.searchParams.get("resourceKey");
+    const folderMatch = url.pathname.match(/\/folders\/([^/?#]+)/i);
+    const fileMatch = url.pathname.match(/\/file\/d\/([^/?#]+)/i);
+    const id = folderMatch?.[1] || fileMatch?.[1] || url.searchParams.get("id");
+    return id ? { id, resourceKey } : null;
+  } catch {
+    if (/^[a-zA-Z0-9_-]{10,}$/.test(value)) return { id: value, resourceKey: null };
+    return null;
+  }
+}
+
+export async function scanCourseFromDriveLink(owner: TokenOwner, linkOrId: string) {
+  const parsed = parseDriveLink(linkOrId);
+  if (!parsed?.id) throw new Error("Cole um link válido de pasta ou vídeo do Google Drive.");
+  return scanCourseFolder(owner, parsed.id, parsed.resourceKey);
 }
 
 function stripExtension(name: string) {

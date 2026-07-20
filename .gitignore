@@ -14,7 +14,9 @@ prisma/*.db-*
 *.sqlite3
 
 .runtime/
+.data/
 *.log
+*.tsbuildinfo
 npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*

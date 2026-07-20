@@ -1,4 +1,4 @@
-import { google } from "googleapis";
+﻿import { google } from "googleapis";
 import type { Credentials } from "google-auth-library";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
@@ -14,11 +14,11 @@ export async function GET(request: Request) {
   try {
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
-    if (!code || !state) throw new Error("O Google não devolveu a autorização esperada.");
+    if (!code || !state) throw new Error("O Google nÃ£o devolveu a autorizaÃ§Ã£o esperada.");
     const stateUserId = await verifyOAuthState(state, "drive");
     const session = await requireUserSession();
     if (!session || session.userId !== stateUserId) {
-      throw new Error("A sessão usada para conectar o Drive não é mais válida.");
+      return NextResponse.redirect(publicAppUrl("/login?expired=1&next=/accounts/drive"));
     }
 
     const auth = createOAuthClient("drive");
@@ -30,10 +30,10 @@ export async function GET(request: Request) {
         ? (await auth.getTokenInfo(tokens.access_token)).scopes
         : [];
     if (!grantedScopes.includes("https://www.googleapis.com/auth/drive.readonly")) {
-      throw new Error("As permissões obrigatórias não foram concedidas.");
+      throw new Error("As permissÃµes obrigatÃ³rias nÃ£o foram concedidas.");
     }
     const profile = await google.oauth2({ version: "v2", auth }).userinfo.get();
-    if (!profile.data.id || !profile.data.email) throw new Error("Não foi possível identificar a conta Google.");
+    if (!profile.data.id || !profile.data.email) throw new Error("NÃ£o foi possÃ­vel identificar a conta Google.");
 
     const existing = await prisma.googleDriveAccount.findFirst({
       where: { googleAccountId: profile.data.id, userId: session.userId } as never,

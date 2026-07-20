@@ -1,4 +1,4 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 import { ArrowLeft, Download, ExternalLink, FileVideo, ScrollText } from "lucide-react";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
@@ -33,6 +33,7 @@ export default async function UploadDetailsPage({
   const elapsedSeconds = job.startedAt ? Math.max(1, (Date.now() - job.startedAt.getTime()) / 1000) : 0;
   const averageSpeed = elapsedSeconds ? sentBytes / elapsedSeconds : 0;
   const remainingSeconds = averageSpeed > 0 ? Math.max(0, (totalBytes - sentBytes) / averageSpeed) : 0;
+  const originLabel = job.driveAccount?.email || "Computador/local";
 
   return (
     <>
@@ -40,15 +41,15 @@ export default async function UploadDetailsPage({
       <PageHeader
         eyebrow="Detalhes da tarefa"
         title={job.courseName}
-        description={`${job.driveAccount.email} → ${job.channel.name}`}
+        description={`${originLabel} â†’ ${job.channel.name}`}
         action={<Link href="/uploads" className="btn-secondary"><ArrowLeft className="size-4" /> Voltar</Link>}
       />
 
       <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Summary label="Status" value={<StatusBadge status={job.status} />} />
         <Summary label="Progresso geral" value={`${job.progress}%`} />
-        <Summary label="Velocidade média" value={averageSpeed ? `${formatBytes(Math.round(averageSpeed))}/s` : "calculando"} />
-        <Summary label="Tempo restante" value={remainingSeconds ? formatDuration(remainingSeconds) : job.status === "COMPLETED" ? "concluído" : "calculando"} />
+        <Summary label="Velocidade mÃ©dia" value={averageSpeed ? `${formatBytes(Math.round(averageSpeed))}/s` : "calculando"} />
+        <Summary label="Tempo restante" value={remainingSeconds ? formatDuration(remainingSeconds) : job.status === "COMPLETED" ? "concluÃ­do" : "calculando"} />
       </div>
 
       <div className="panel mb-6 p-5">
@@ -77,7 +78,7 @@ export default async function UploadDetailsPage({
               <div className="text-xs font-extrabold text-slate-400">{String(index + 1).padStart(2, "0")}</div>
               <div className="min-w-0">
                 <div className="truncate text-xs font-extrabold text-slate-700">{item.title}</div>
-                <div className="mt-1 text-[10px] text-slate-400">{item.moduleName || "Pasta principal"} · {formatBytes(item.sizeBytes)}</div>
+                <div className="mt-1 text-[10px] text-slate-400">{item.moduleName || "Pasta principal"} Â· {formatBytes(item.sizeBytes)}</div>
                 {item.errorMessage && <div className="mt-1 text-[10px] font-semibold text-rose-600">{cleanErrorMessage(item.errorMessage)}</div>}
               </div>
               <div>
@@ -122,3 +123,4 @@ function formatDuration(seconds: number) {
   if (minutes) return `${minutes}min`;
   return `${rounded}s`;
 }
+

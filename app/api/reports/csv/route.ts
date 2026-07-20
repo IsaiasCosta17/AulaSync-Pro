@@ -22,7 +22,7 @@ export async function GET(request: Request) {
     item.job.courseName,
     item.title,
     item.moduleName || "",
-    item.job.driveAccount.email,
+    item.job.driveAccount?.email || "Computador/local",
     item.job.channel.name,
     item.job.playlist?.name || "",
     item.status,

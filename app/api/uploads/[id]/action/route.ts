@@ -37,7 +37,7 @@ export async function POST(
     if (action === "resume" && job.status !== JobStatus.PAUSED && job.status !== JobStatus.QUOTA_REACHED && job.status !== JobStatus.PENDING) {
       return NextResponse.json({ error: "Esta tarefa não pode ser retomada no estado atual." }, { status: 409 });
     }
-    if (["resume", "retry"].includes(action) && (!job.driveAccount.isActive || !job.channel.isActive)) {
+    if (["resume", "retry"].includes(action) && ((job.driveAccount && !job.driveAccount.isActive) || !job.channel.isActive)) {
       return NextResponse.json({ error: "Reconecte a conta Drive e o canal YouTube antes de continuar." }, { status: 409 });
     }
 

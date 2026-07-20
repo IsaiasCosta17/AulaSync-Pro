@@ -1,13 +1,14 @@
 # AulaSync Pro
 
-O AulaSync Pro conecta contas Google Drive a canais YouTube, organiza cursos por pastas, cria ou reutiliza playlists e envia aulas com upload resumable. O sistema não impõe limite interno de aulas por tarefa; os limites oficiais do Google e do canal continuam válidos.
+O AulaSync Pro conecta fontes de vídeo a canais YouTube, organiza cursos por pastas, cria ou reutiliza playlists e envia aulas com upload resumable. As fontes podem ser Google Drive, links compartilhados do Drive ou vídeos importados do computador. O sistema não impõe limite interno de aulas por tarefa; os limites oficiais do Google e do canal continuam válidos.
 
 ## Recursos atuais
 
 - Login administrativo e proteção de páginas e APIs.
 - OAuth separado para Drive e YouTube, com suporte a várias contas e canais.
 - Refresh tokens e sessões resumable criptografados com AES-256-GCM.
-- Navegação de pastas, leitura recursiva de módulos e filtro de MP4, MOV, AVI, MKV e WEBM.
+- Navegação de pastas do Drive, área “Compartilhados comigo”, links compartilhados e filtro de MP4, MOV, AVI, MKV e WEBM.
+- Importação de vídeos do computador/dispositivo para uma pasta persistente do servidor antes do envio ao YouTube.
 - Todas as aulas encontradas ficam selecionadas inicialmente.
 - Ordenação natural por número da aula, revisão de títulos, prefixo Aula 01 e correção automática de títulos duplicados.
 - Playlist nova ou playlist já existente no canal.
@@ -79,6 +80,7 @@ Use a URI PostgreSQL fornecida pelo Supabase em `DATABASE_URL`. A variável deve
 | GOOGLE_CLIENT_SECRET | Segredo OAuth do Google |
 | GOOGLE_REDIRECT_URI_DRIVE | Callback do Drive |
 | GOOGLE_REDIRECT_URI_YOUTUBE | Callback do YouTube |
+| LOCAL_VIDEO_UPLOAD_DIR | Pasta persistente para vídeos importados do computador; padrão `.data/local-videos` |
 | MAX_CONCURRENT_DRIVE_STREAMS_PER_ACCOUNT | Leituras simultâneas por conta Drive; limite seguro 2 |
 | MAX_CONCURRENT_UPLOADS_GLOBAL | Uploads ativos em toda a instalação; padrão 4 para evitar bloqueios 429 |
 | GOOGLE_API_REQUEST_SPACING_MS | Intervalo entre chamadas auxiliares às APIs Google; padrão 250 ms |
@@ -107,9 +109,9 @@ Alterações são salvas no banco e aplicadas às operações seguintes. O valor
 
 ## Fluxo de upload
 
-1. Conecte a conta em Contas > Google Drive.
-2. Conecte o canal em Contas > Canais YouTube.
-3. Em Cursos, selecione a pasta principal.
+1. Conecte o canal em Contas > Canais YouTube.
+2. Opcionalmente conecte a conta em Contas > Google Drive.
+3. Em Cursos, escolha uma origem: vídeos do computador, pasta do Drive, Compartilhados comigo ou link compartilhado.
 4. Em Novo upload, revise todos os títulos e, se desejar, aplique o prefixo Aula 01.
 5. Escolha uma playlist existente ou informe o nome da nova playlist.
 6. Defina a privacidade e inicie.
@@ -123,9 +125,9 @@ Cada canal possui sua própria fila, concorrência adaptativa e estado de quota.
 
 A URI da sessão resumable é criptografada e salva por aula. Depois de timeout, pausa ou reinício, o AulaSync consulta o byte confirmado pelo YouTube e continua dali. Progresso é gravado continuamente no banco.
 
-Antes do upload, o sistema confirma que o arquivo existe, não está na lixeira, tem tamanho válido e possui extensão aceita. Também valida a conta, o canal e a playlist. Se uma playlist vinculada tiver sido excluída, uma nova é criada com o mesmo nome.
+Antes do upload, o sistema confirma que o arquivo existe, não está na lixeira quando vem do Drive, tem tamanho válido e possui extensão aceita. Também valida a conta, o canal e a playlist. Se uma playlist vinculada tiver sido excluída, uma nova é criada com o mesmo nome.
 
-Com a verificação de duplicados ativa, o mesmo arquivo do mesmo Drive não é enviado novamente ao mesmo canal: o vídeo já existente é reutilizado e somente a associação à playlist é verificada.
+Com a verificação de duplicados ativa, o mesmo arquivo do mesmo Drive não é enviado novamente ao mesmo canal. Para vídeos locais, o sistema usa nome + tamanho + canal para reaproveitar envios anteriores sempre que possível. O vídeo já existente é reutilizado e somente a associação à playlist é verificada.
 
 Somente erros reais de autorização pausam a tarefa para reconexão. Erros temporários são retomados automaticamente. Erros permanentes ficam visíveis para correção e uso do botão Reenviar apenas erros.
 

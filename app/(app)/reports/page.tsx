@@ -120,7 +120,7 @@ export default async function ReportsPage({
                     <div className="mt-1 truncate text-[10px] text-slate-400">{item.job.courseName}{item.moduleName ? ` · ${item.moduleName}` : ""}</div>
                     {item.errorMessage && <div className="mt-1.5 line-clamp-2 text-[10px] font-semibold text-rose-600">{cleanErrorMessage(item.errorMessage)}</div>}
                   </td>
-                  <td className="px-4 py-4 text-slate-500">{item.job.driveAccount.email}</td>
+                  <td className="px-4 py-4 text-slate-500">{item.job.driveAccount?.email || "Computador/local"}</td>
                   <td className="px-4 py-4 font-bold text-slate-600">{item.job.channel.name}</td>
                   <td className="px-4 py-4 text-slate-500">{item.job.playlist?.name || "—"}</td>
                   <td className="px-4 py-4"><StatusBadge status={item.status} /></td>

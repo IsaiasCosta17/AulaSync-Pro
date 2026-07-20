@@ -19,6 +19,7 @@ import {
   uploadVideoResumable,
 } from "@/lib/resumable-upload";
 import { getAppSettings } from "@/lib/settings";
+import { defaultMimeForName, localVideoStats, openLocalVideoStream } from "@/lib/local-videos";
 
 const workers = new Set<string>();
 const sourceLocks = new Map<string, Promise<void>>();
@@ -42,7 +43,7 @@ const workerOwnerId = randomUUID();
 const CHANNEL_DAILY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 type JobContext = UploadJob & {
-  driveAccount: GoogleDriveAccount;
+  driveAccount: GoogleDriveAccount | null;
   channel: YoutubeChannel;
 };
 
@@ -624,13 +625,15 @@ async function ensurePlaylist(jobId: string) {
 }
 
 async function validateGoogleConnections(job: JobContext) {
-  const drive = driveClient(job.driveAccount);
   const youtube = youtubeClient(job.channel);
-  await retryGoogleOperation(() => drive.files.get({
-    fileId: "root",
-    fields: "id",
-    supportsAllDrives: true,
-  }), "drive:" + job.driveAccountId);
+  if (job.driveAccount && job.driveAccountId) {
+    const drive = driveClient(job.driveAccount);
+    await retryGoogleOperation(() => drive.files.get({
+      fileId: "root",
+      fields: "id",
+      supportsAllDrives: true,
+    }), "drive:" + job.driveAccountId);
+  }
   const channels = await retryGoogleOperation(() => youtube.channels.list({
     part: ["id"],
     mine: true,
@@ -665,11 +668,14 @@ async function findReusableVideo(job: JobContext, item: UploadItem) {
   const previous = await prisma.uploadItem.findFirst({
     where: {
       id: { not: item.id },
-      driveFileId: item.driveFileId,
+      sourceType: item.sourceType,
+      ...(item.sourceType === "local"
+        ? { originalName: item.originalName }
+        : { driveFileId: item.driveFileId }),
       youtubeVideoId: { not: null },
       ...(item.sizeBytes ? { sizeBytes: item.sizeBytes } : {}),
       job: {
-        driveAccountId: job.driveAccountId,
+        ...(job.driveAccountId ? { driveAccountId: job.driveAccountId } : {}),
         channelId: job.channelId,
       },
     },
@@ -687,6 +693,10 @@ async function applyDefaultThumbnail(
 ) {
   const fileId = settings.defaultThumbnailDriveFileId;
   if (!fileId) return;
+  if (!job.driveAccount) {
+    await log(job.id, "warn", `Miniatura não aplicada em ${item.title}: conecte uma conta Drive para usar miniatura padrão.`).catch(() => undefined);
+    return;
+  }
   try {
     const drive = driveClient(job.driveAccount);
     const metadata = await drive.files.get({
@@ -729,21 +739,38 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
   if (initialStatus !== JobStatus.RUNNING) return;
 
   const settings = await getAppSettings((job as { userId?: string }).userId || "global");
-  const drive = driveClient(job.driveAccount);
+  const isLocalSource = item.sourceType === "local";
+  let sourceName = item.originalName;
+  let sourceMimeType = item.mimeType;
+  let totalSize = item.sizeBytes;
+  const drive = !isLocalSource && job.driveAccount ? driveClient(job.driveAccount) : null;
+  if (isLocalSource) {
+    if (!item.localPath) throw new Error("Arquivo local não encontrado. Importe o vídeo novamente.");
+    const stats = await localVideoStats((job as { userId?: string }).userId || "", item.localPath).catch(() => null);
+    if (!stats?.isFile()) throw new Error("Arquivo local não encontrado. Importe o vídeo novamente.");
+    sourceMimeType = item.mimeType || defaultMimeForName(item.originalName);
+    totalSize = BigInt(stats.size);
+  } else {
+    if (!drive || !job.driveAccountId) throw new Error("Conta Google Drive não disponível para esta aula.");
   const metadata = await retryGoogleOperation(() => drive.files.get({
     fileId: item.driveFileId,
     fields: "id,name,size,mimeType,trashed",
     supportsAllDrives: true,
-  }), "drive:" + job.driveAccountId);
+    ...(item.driveResourceKey ? { resourceKey: item.driveResourceKey } : {}),
+  } as never), "drive:" + job.driveAccountId);
   if (!metadata.data.id || metadata.data.trashed) {
     throw new Error("O arquivo da aula não existe mais no Google Drive.");
   }
-  const sourceName = metadata.data.name || item.originalName;
-  const sourceMimeType = metadata.data.mimeType || item.mimeType;
+  sourceName = metadata.data.name || item.originalName;
+  sourceMimeType = metadata.data.mimeType || item.mimeType;
   if (!/\.(mp4|mov|avi|mkv|webm)$/i.test(sourceName) || (!sourceMimeType.startsWith("video/") && sourceMimeType !== "application/octet-stream")) {
     throw new Error("Formato de vídeo não suportado. Use mp4, mov, avi, mkv ou webm.");
   }
-  const totalSize = metadata.data.size ? BigInt(metadata.data.size) : item.sizeBytes;
+  totalSize = metadata.data.size ? BigInt(metadata.data.size) : item.sizeBytes;
+  }
+  if (!/\.(mp4|mov|avi|mkv|webm)$/i.test(sourceName) || (!sourceMimeType.startsWith("video/") && sourceMimeType !== "application/octet-stream")) {
+    throw new Error("Formato de vídeo não suportado. Use mp4, mov, avi, mkv ou webm.");
+  }
   if (!totalSize || totalSize <= 0n) {
     throw new Error("O tamanho do vídeo é inválido ou não foi informado pelo Drive.");
   }
@@ -823,15 +850,21 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
             .slice(0, 30),
           privacyStatus: job.privacyStatus,
           rateLimitKey: job.channelId,
-          mimeType: item.mimeType,
+          mimeType: sourceMimeType,
           totalSize,
           sessionUri,
           getMediaStream: async (start, end) => {
+            if (isLocalSource) {
+              if (!item.localPath) throw new Error("Arquivo local não encontrado. Importe o vídeo novamente.");
+              return openLocalVideoStream((job as { userId?: string }).userId || "", item.localPath, start, end);
+            }
+            if (!drive) throw new Error("Conta Google Drive não disponível para esta aula.");
             const response = await drive.files.get(
               {
                 fileId: item.driveFileId,
                 alt: "media",
                 supportsAllDrives: true,
+                ...(item.driveResourceKey ? { resourceKey: item.driveResourceKey } : {}),
               },
               {
                 responseType: "stream",
@@ -1019,12 +1052,13 @@ async function processUploadItemUnlocked(job: JobContext, playlist: Playlist, it
 }
 
 async function processUploadItem(job: JobContext, playlist: Playlist, item: UploadItem) {
-  const key = `${job.driveAccountId}:${job.channelId}:${item.driveFileId}`;
-  await acquireUploadSlot(item.id, job.id, job.channelId, job.driveAccountId);
+  const sourceGroup = job.driveAccountId || `local:${job.id}`;
+  const key = `${item.sourceType}:${sourceGroup}:${job.channelId}:${item.driveFileId}`;
+  await acquireUploadSlot(item.id, job.id, job.channelId, sourceGroup);
   try {
     return await withSourceLock(key, () => processUploadItemUnlocked(job, playlist, item));
   } finally {
-    releaseUploadConcurrencySlot(item.id, job.channelId, job.driveAccountId);
+    releaseUploadConcurrencySlot(item.id, job.channelId, sourceGroup);
   }
 }
 
@@ -1097,7 +1131,7 @@ export async function runUploadJob(jobId: string) {
     }
     await clearExpiredChannelQuota(availability.channelId);
 
-    if (!availability.driveAccount.isActive || !availability.channel.isActive) {
+    if ((availability.driveAccount && !availability.driveAccount.isActive) || !availability.channel.isActive) {
       await prisma.uploadJob.update({
         where: { id: jobId },
         data: {

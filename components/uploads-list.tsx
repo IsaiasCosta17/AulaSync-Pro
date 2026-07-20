@@ -29,7 +29,7 @@ type Job = {
   errorMessage: string | null;
   createdAt: string;
   startedAt: string | null;
-  driveAccount: { name: string; email: string };
+  driveAccount: { name: string; email: string } | null;
   channel: { name: string; avatarUrl: string | null };
   playlist: { name: string; youtubePlaylistId: string } | null;
   items: UploadItem[];
@@ -211,7 +211,7 @@ export function UploadsList({ showRemoved = false }: { showRemoved?: boolean }) 
                     <StatusBadge status={job.status} />
                   </div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-400">
-                    <span>{job.driveAccount.email}</span><span>→</span><span className="font-bold text-slate-500">{job.channel.name}</span><span>·</span><span>{formatDate(job.createdAt)}</span>
+                    <span>{job.driveAccount?.email || "Computador/local"}</span><span>→</span><span className="font-bold text-slate-500">{job.channel.name}</span><span>·</span><span>{formatDate(job.createdAt)}</span>
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">

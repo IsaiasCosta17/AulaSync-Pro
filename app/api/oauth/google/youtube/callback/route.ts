@@ -1,4 +1,4 @@
-import { google } from "googleapis";
+﻿import { google } from "googleapis";
 import type { Credentials } from "google-auth-library";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
@@ -14,11 +14,11 @@ export async function GET(request: Request) {
   try {
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
-    if (!code || !state) throw new Error("O Google não devolveu a autorização esperada.");
+    if (!code || !state) throw new Error("O Google nÃ£o devolveu a autorizaÃ§Ã£o esperada.");
     const stateUserId = await verifyOAuthState(state, "youtube");
     const session = await requireUserSession();
     if (!session || session.userId !== stateUserId) {
-      throw new Error("A sessão usada para conectar o YouTube não é mais válida.");
+      return NextResponse.redirect(publicAppUrl("/login?expired=1&next=/accounts/youtube"));
     }
 
     const auth = createOAuthClient("youtube");
@@ -30,7 +30,7 @@ export async function GET(request: Request) {
         ? (await auth.getTokenInfo(tokens.access_token)).scopes
         : [];
     if (!grantedScopes.includes("https://www.googleapis.com/auth/youtube")) {
-      throw new Error("As permissões obrigatórias não foram concedidas.");
+      throw new Error("As permissÃµes obrigatÃ³rias nÃ£o foram concedidas.");
     }
     const [profile, channelResponse] = await Promise.all([
       google.oauth2({ version: "v2", auth }).userinfo.get(),
@@ -40,7 +40,7 @@ export async function GET(request: Request) {
       }),
     ]);
     const channel = channelResponse.data.items?.[0];
-    if (!channel?.id) throw new Error("A conta selecionada não possui um canal YouTube.");
+    if (!channel?.id) throw new Error("A conta selecionada nÃ£o possui um canal YouTube.");
 
     const existing = await prisma.youtubeChannel.findFirst({
       where: { youtubeChannelId: channel.id, userId: session.userId } as never,
@@ -57,7 +57,7 @@ export async function GET(request: Request) {
       userId: session.userId,
       youtubeChannelId: channel.id,
       name: channel.snippet?.title || "Canal YouTube",
-      email: profile.data.email || "E-mail não informado",
+      email: profile.data.email || "E-mail nÃ£o informado",
       avatarUrl: channel.snippet?.thumbnails?.default?.url || profile.data.picture,
       encryptedTokens: encryptJson(mergedTokens),
       scopes: grantedScopes.join(" "),
