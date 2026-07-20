@@ -2,6 +2,7 @@
   "name": "aulasync-pro",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "npm@10.8.2",
   "engines": {
     "node": "20.x",
     "npm": ">=10 <11"
